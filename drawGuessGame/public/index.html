@@ -252,12 +252,29 @@
   .page.portrait .stage { flex: 0 0 auto; min-height: 0; }
   .page.portrait .canvasWrap { min-height: 0; aspect-ratio: 4 / 3; }
   .page.portrait .side { flex: 0 0 auto; width: 100%; gap: 6px; }
+  /* 侧栏改为两列 grid：游戏操作 + 参与玩家并排，聊天占整行 */
+  .page.portrait .side {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 6px;
+  }
+  .page.portrait .side .chatCard { grid-column: 1 / -1; }
+  /* 压缩卡片密度：内边距与字号收窄 */
+  .page.portrait .side .card { padding: 7px 8px; font-size: 12px; }
+  .page.portrait .side .cardTitle { font-size: 11px; margin-bottom: 5px; }
+  /* 游戏操作卡：按钮单列堆叠，回合选项紧凑 */
+  .page.portrait .gameActions { flex-direction: column; gap: 4px; }
+  .page.portrait .gameActions button { padding: 5px 0; font-size: 12px; }
+  .page.portrait .roundsRow { margin-top: 5px; padding-top: 5px; }
+  .page.portrait .roundsLabel { font-size: 11px; }
+  .page.portrait .roundsOpt { padding: 3px 2px; font-size: 11px; }
   /* 工具栏：允许换行 */
   .page.portrait .toolbar { flex-wrap: wrap; gap: 4px; }
   .page.portrait .toolBtn { flex: 0 0 auto; }
-  /* 得分榜与聊天区高度限制 */
-  .page.portrait .scoreList { max-height: 40vh; }
-  .page.portrait .chatCard { flex: 0 0 auto; min-height: 150px; max-height: 38vh; }
+  /* 得分榜与聊天区：得分列表压缩，聊天区最大化 */
+  .page.portrait .scoreList { max-height: 26vh; }
+  .page.portrait .scoreRow { padding: 2px 6px; gap: 6px; }
+  .page.portrait .chatCard { flex: 0 0 auto; min-height: 220px; max-height: 45vh; }
   /* 全屏按钮与 toast 保持在视口内 */
   .page.portrait .fsBtn { right: 14px; bottom: 14px; width: 38px; height: 38px; }
   .page.portrait .toast { top: 60px; }
