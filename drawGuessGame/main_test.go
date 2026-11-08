@@ -357,3 +357,43 @@ func containsRune(s string, r rune) bool {
 	}
 	return false
 }
+
+// TestSelectEventNoSpoiler 验证选题后公屏事件文案不含题目词（只含字数提示）
+func TestSelectEventNoSpoiler(t *testing.T) {
+	hub := NewHub(nil)
+	hub.lock.Lock()
+	hub.enterSeq++
+	hub.clients["A"] = &client{nick: "A", enterSeq: 1, ready: true, send: make(chan []byte, 4)}
+	hub.enterSeq++
+	hub.clients["B"] = &client{nick: "B", enterSeq: 2, ready: true, send: make(chan []byte, 4)}
+	hub.lock.Unlock()
+	if err := hub.StartGame("A"); err != nil {
+		t.Fatalf("开局失败: %v", err)
+	}
+	// 构造题目：把 Options[0] 作为答案
+	hub.lock.Lock()
+	word := hub.game.Options[0]
+	hub.lock.Unlock()
+	if err := hub.SelectWord("A", word); err != nil {
+		t.Fatalf("选题失败: %v", err)
+	}
+
+	// 检查 h.events 最后一条：不含题目词，且含"字"（字数提示）
+	hub.lock.Lock()
+	events := append([]string{}, hub.events...)
+	hub.lock.Unlock()
+	if len(events) == 0 {
+		t.Fatal("应有事件记录")
+	}
+	last := events[len(events)-1]
+	t.Logf("选题事件: %s", last)
+	// 题目词的每个字都不应出现在事件中
+	for _, r := range []rune(word) {
+		if containsRune(last, r) {
+			t.Fatalf("选题事件泄露题目字 %q: %s", string(r), last)
+		}
+	}
+	if !containsStr(last, "字") {
+		t.Fatalf("选题事件应含字数提示: %s", last)
+	}
+}
