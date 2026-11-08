@@ -232,13 +232,35 @@
   }
   .toast.show { opacity: 1; }
 
-  /* 移动端竖屏：改为纵向布局，画板保持一定高度 */
-  @media (max-width: 700px) {
-    .page { flex-direction: column; overflow-y: auto; }
-    .layout { flex-direction: column; }
-    .side { flex: 0 0 auto; width: 100%; }
-    .stage { min-height: 420px; }
+  /* ============ 移动端竖屏 / 窄屏：流式布局（不缩放） ============ */
+  /* 竖屏时由 JS 给 .page 加 .portrait：解除固定画布缩放，改为自适应流式 */
+  .page.portrait {
+    position: relative; left: auto; top: auto;
+    width: 100%; height: auto; min-height: 100%;
+    transform: none;
+    padding: 10px 10px 20px;
+    gap: 8px;
+    overflow-y: auto;
   }
+  /* 顶部状态栏：压缩字号与间距 */
+  .page.portrait .topbar { min-height: 28px; gap: 6px; }
+  .page.portrait .phaseTag { font-size: 12px; padding: 2px 10px; }
+  .page.portrait .clock { font-size: 12px; padding: 2px 8px; }
+  .page.portrait .connState { font-size: 11px; }
+  /* 布局：单列（画布在上，侧栏在下） */
+  .page.portrait .layout { flex-direction: column; gap: 8px; }
+  .page.portrait .stage { flex: 0 0 auto; min-height: 0; }
+  .page.portrait .canvasWrap { min-height: 0; aspect-ratio: 4 / 3; }
+  .page.portrait .side { flex: 0 0 auto; width: 100%; gap: 6px; }
+  /* 工具栏：允许换行 */
+  .page.portrait .toolbar { flex-wrap: wrap; gap: 4px; }
+  .page.portrait .toolBtn { flex: 0 0 auto; }
+  /* 得分榜与聊天区高度限制 */
+  .page.portrait .scoreList { max-height: 40vh; }
+  .page.portrait .chatCard { flex: 0 0 auto; min-height: 150px; max-height: 38vh; }
+  /* 全屏按钮与 toast 保持在视口内 */
+  .page.portrait .fsBtn { right: 14px; bottom: 14px; width: 38px; height: 38px; }
+  .page.portrait .toast { top: 60px; }
 </style>
 </head>
 <body>
@@ -1469,8 +1491,15 @@
 
   function fitPage () {
     if (!pageEl) return
-    const scale = Math.min(innerWidth / PAGE_W, innerHeight / PAGE_H)
-    pageEl.style.transform = 'translate(-50%, -50%) scale(' + scale + ')'
+    // 竖屏/窄屏：切换流式布局（不缩放），横向/宽屏保持固定画布等比缩放
+    const isPortrait = innerWidth < 760 || innerHeight > innerWidth
+    pageEl.classList.toggle('portrait', isPortrait)
+    if (isPortrait) {
+      pageEl.style.transform = 'none'
+    } else {
+      const scale = Math.min(innerWidth / PAGE_W, innerHeight / PAGE_H)
+      pageEl.style.transform = 'translate(-50%, -50%) scale(' + scale + ')'
+    }
   }
   window.addEventListener('resize', () => { fitPage(); resizeCanvas() })
   fitPage()
