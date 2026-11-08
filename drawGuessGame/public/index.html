@@ -1491,6 +1491,7 @@
   buildSwatches()
   resizeCanvas()
   $('btnStart').addEventListener('click', () => send({ type: 'start' }))
+  $('btnRestart').addEventListener('click', () => send({ type: 'restart' }))
   $('btnReady').addEventListener('click', () => {
     // 依据当前我的准备状态切换
     const u = snapshot && snapshot.users ? snapshot.users.find(x => x.nick === myNick) : null
