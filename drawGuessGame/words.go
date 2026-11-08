@@ -176,11 +176,17 @@ func (l *wordLibrary) WordInfo(word string) (WordInfo, bool) {
 	return WordInfo{}, false
 }
 
-// Hint 返回某词的提示文本：优先词库 hints，否则按字数生成
+// Hint 返回某词的提示文本：优先词库 hints，否则按字数生成。
+// 注意：词库 hints 可能是分类词（如「游戏」），公屏事件中不应使用，防止泄露信息。
 func (l *wordLibrary) Hint(word string) string {
 	if info, ok := l.WordInfo(word); ok && len(info.Hints) > 0 {
 		return info.Hints[rand.Intn(len(info.Hints))]
 	}
+	return wordLengthHint(word)
+}
+
+// wordLengthHint 仅返回字数提示（如「3个字」），不读词库 hints，避免把分类/其他信息带上公屏
+func wordLengthHint(word string) string {
 	n := len([]rune(word))
 	if n <= 1 {
 		return "1个字"

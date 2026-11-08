@@ -429,6 +429,16 @@ func (h *Hub) OnUserLeaveRoom(nick string) {
 // 画手离开则结束当前回合；玩家离开不整局作废，剩余玩家继续；不足 2 人则中止回等待。
 func (h *Hub) handlePlayerDrop(nick string) {
 	h.lock.Lock()
+	// 房间已无人在线：彻底重置游戏状态（清空残留的旧局/玩家列表）
+	if len(h.clients) == 0 && h.game != nil {
+		h.armTimerLocked()
+		h.game = nil
+		h.lock.Unlock()
+		h.syncRoomLP()
+		h.reportAll()
+		h.Broadcast()
+		return
+	}
 	if h.game == nil || h.game.Phase == PhaseGameOver || h.game.Phase == PhaseWaiting {
 		h.lock.Unlock()
 		return
@@ -611,7 +621,7 @@ func (h *Hub) SelectWord(nick, word string) error {
 	h.armTimerLocked()
 	h.lock.Unlock()
 
-	h.addEvent(fmt.Sprintf("✏️ %s 开始作画，提示：%s", nick, library.Hint(picked)))
+	h.addEvent(fmt.Sprintf("✏️ %s 开始作画，提示：%s", nick, wordLengthHint(picked)))
 	h.syncRoomLP()
 	h.reportAll()
 	h.Broadcast()
@@ -826,7 +836,7 @@ func (h *Hub) onSelectTimeout(seq int64) {
 	h.armTimerLocked()
 	drawer := h.game.Drawer
 	h.lock.Unlock()
-	h.addEvent(fmt.Sprintf("⏰ 画手 %s 选题超时，随机选择了 %s", drawer, word))
+	h.addEvent(fmt.Sprintf("⏰ 画手 %s 选题超时，已自动开始（%s）", drawer, wordLengthHint(word)))
 	h.syncRoomLP()
 	h.reportAll()
 	h.Broadcast()

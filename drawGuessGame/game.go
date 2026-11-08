@@ -300,7 +300,8 @@ func (g *Game) AdvanceRound() bool {
 	return false
 }
 
-// FinishGame 整局结束：计算排名
+// FinishGame 整局结束：计算排名。
+// 排名结算后清空 Players（下一局由 RestartGame 用 ready 玩家重建，避免残留展示）。
 func (g *Game) FinishGame() {
 	g.Phase = PhaseGameOver
 	rank := make([]RankItem, 0, len(g.Players))
@@ -317,22 +318,20 @@ func (g *Game) FinishGame() {
 	if len(rank) > 0 {
 		g.Winner = rank[0].Nick
 	}
+	// 清空玩家与轮换顺序：终局弹窗展示 ranking，玩家列表不再使用
+	g.Players = make(map[string]*Player)
+	g.PlayerOrder = nil
 }
 
 // Reset 整局重置（回到等待），保留玩家列表与分数清零
 func (g *Game) Reset() {
 	*g = Game{
 		Phase:       PhaseWaiting,
-		Players:     g.Players,
-		PlayerOrder: g.PlayerOrder,
+		Players:     make(map[string]*Player), // 清空：等待阶段不残留已离房玩家
+		PlayerOrder: nil,
 		TotalRounds: g.TotalRounds,
 		Round:       1,
 		DrawerIndex: 0,
-	}
-	for _, p := range g.Players {
-		p.Score = 0
-		p.HasDrawn = false
-		p.Answered = false
 	}
 }
 
