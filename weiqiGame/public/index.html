@@ -1,0 +1,1441 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>围棋 / 五子棋 · 插件房接入 Demo</title>
+<style>
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; padding: 0; overflow: hidden;
+    font-family: -apple-system, "PingFang SC", "Microsoft YaHei", sans-serif;
+    /* 半透明底色：让插件房外壳的背景（房间背景图）透出来 */
+    background: rgba(27, 29, 36, .78); color: #eaeaea;
+  }
+  /* 固定 1024x768（4:3）设计画布：由 JS 按视口等比缩放，
+     任意窗口尺寸下内容与棋盘的比例都保持一致。
+     用 left/top 50% + translate(-50%,-50%) 把画布中心钉在视口中心，
+     再 scale() 围绕该点缩放，避免超大盒子被 flex 居中时的对齐退化。 */
+  .page {
+    position: fixed; left: 50%; top: 50%;
+    width: 1024px; height: 768px;
+    padding: 16px 16px 12px;
+    transform-origin: center;
+    display: flex; flex-direction: column; gap: 12px;
+  }
+  /* 顶部栏：左（轮次/倒计时）+ 中（玩法切换）+ 右（连接状态） */
+  .topbar {
+    display: grid; grid-template-columns: 1fr auto 1fr;
+    align-items: center; gap: 8px; min-height: 28px;
+  }
+  .topbarSide { display: flex; align-items: center; gap: 8px; min-width: 0; }
+  .topbarLeft { overflow: hidden; white-space: nowrap; }
+  .topbarRight { justify-content: flex-end; overflow: hidden; }
+  .topbarCenter { justify-self: center; }
+  .turn { font-weight: 600; }
+  .dot { display: inline-block; width: 12px; height: 12px; border-radius: 50%; vertical-align: -1px; }
+  .dot.black { background: #111; border: 1px solid #888; }
+  .dot.white { background: #fff; }
+  /* 轮到我落子时的提示 */
+  .myTurn {
+    color: #ff4d4f; font-weight: 700; font-size: 14px;
+    animation: myTurnPulse 1.6s ease-in-out infinite;
+  }
+  @keyframes myTurnPulse { 0%, 100% { opacity: 1; } 50% { opacity: .55; } }
+  /* stretch：让侧栏撑满布局可用高度，聊天区才能占满剩余空间 */
+  /* stretch：让侧栏撑满布局可用高度，聊天区才能占满剩余空间 */
+  .layout { display: flex; gap: 16px; align-items: stretch; flex: 1 1 auto; min-height: 0; }
+  /* 棋盘调大：686 = 画布内容宽 992 - 侧栏 290 - 间距 16，正好吃满无空档 */
+  .boardWrap {
+    position: relative; flex: 0 0 686px; width: 686px; height: 700px;
+    background: #d9a441; border-radius: 6px; padding: 6%;
+  }
+  .grid {
+    position: absolute; inset: 6%;
+    display: grid; grid-template-columns: repeat(var(--n), 1fr); grid-template-rows: repeat(var(--n), 1fr);
+    /* 触屏拖拽时只做落子预览，不触发页面滚动/双指缩放 */
+    touch-action: none;
+  }
+  .point { position: relative; display: flex; align-items: center; justify-content: center; cursor: default; }
+  .grid.canPlay .point { cursor: pointer; }
+  .point::before, .point::after { content: ''; position: absolute; background: #6d5320; }
+  /* 横线：默认铺满整格；最左/最右一列只画到交点，保证最外圈平整不冒头 */
+  .point::before { left: 0; right: 0; top: 50%; height: 1px; transform: translateY(-50%); }
+  .point.edgeL::before { left: 50%; }
+  .point.edgeR::before { right: 50%; }
+  /* 竖线：同上，最上/最下一行只画到交点 */
+  .point::after { top: 0; bottom: 0; left: 50%; width: 1px; transform: translateX(-50%); }
+  .point.edgeT::after { top: 50%; }
+  .point.edgeB::after { bottom: 50%; }
+  /* 最外一圈线加粗 */
+  .point.edgeT::before, .point.edgeB::before { height: 2px; }
+  .point.edgeL::after, .point.edgeR::after { width: 2px; }
+  /* 星位小圆点 */
+  .starDot {
+    position: absolute; left: 50%; top: 50%;
+    width: 26%; height: 26%; min-width: 4px; min-height: 4px;
+    transform: translate(-50%, -50%);
+    border-radius: 50%; background: #6d5320;
+    z-index: 1; pointer-events: none;
+  }
+  .stone {
+    position: relative; z-index: 2;
+    width: 88%; height: 88%; border-radius: 50%;
+    box-shadow: 0 1px 2px rgba(0,0,0,.5);
+  }
+  .stone.black { background: radial-gradient(circle at 32% 30%, #555, #000); }
+  .stone.white { background: radial-gradient(circle at 32% 30%, #fff, #ccc); }
+  /* 鼠标悬停的半透明落子预览 */
+  .stone.previewStone { z-index: 3; opacity: .45; pointer-events: none; }
+  .point.last .stone::after {
+    content: ''; position: absolute; inset: 38%; border-radius: 50%; background: #e33;
+  }
+  /* 侧栏收窄并贴右，给左边棋盘让空间 */
+  .side { flex: 0 0 290px; width: 290px; display: flex; flex-direction: column; gap: 8px; min-height: 0; }
+  .card { background: #262933; border-radius: 8px; padding: 10px 12px; font-size: 13px; }
+  /* 座位区顶部留白，给头像上的聊天气泡腾位置 */
+  .playersCard { padding-top: 2.4em; overflow: visible; }
+  .seatList { display: flex; gap: 8px; }
+  .seatSlot {
+    flex: 1 1 0; min-width: 0; position: relative;
+    display: flex; flex-direction: column; align-items: center; gap: 6px;
+    padding: 28px 6px 8px; border-radius: 10px; background: #2f333f;
+    border: 1px solid transparent; cursor: pointer;
+    transition: background .2s ease, border-color .2s ease, box-shadow .2s ease;
+  }
+  .seatSlot:hover { background: #373c49; }
+  .seatSlot.isOccupied { cursor: default; }
+  /* 右上角用颜色标记黑白方 */
+  .seatColorBadge {
+    position: absolute; top: 6px; right: 6px;
+    width: 10px; height: 10px; border-radius: 50%;
+    border: 1px solid #8d93a1;
+  }
+  .seatColorBadge.black { background: #111; }
+  .seatColorBadge.white { background: #fff; }
+  /* 蓝框表示当前该谁落子 */
+  .seatSlot.isTurn {
+    border-color: #3d6fd6;
+    box-shadow: 0 0 0 1px rgba(61, 111, 214, .55), 0 0 14px rgba(61, 111, 214, .35);
+  }
+  .seatName {
+    max-width: 100%; font-size: 12px; color: #b9bdc7;
+    overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  }
+  .seatSlot.isOccupied .seatName { color: #eaeaea; }
+  /* 操作按钮：头像/座位区下方排成一行 */
+  .seatActions { display: flex; gap: 4px; margin-top: 10px; }
+  .seatActions button {
+    flex: 1 1 0; min-width: 0;
+    padding: 6px 0; font-size: 12px;
+    white-space: nowrap; letter-spacing: -.2px;
+  }
+  .playersCard .result { margin-top: 8px; font-size: 12px; text-align: center; }
+
+  /* 头像 + 头像框（与聊天室 AvatarBox 同款结构：框整体放大 1.35 倍） */
+  .avatarHost { position: relative; }
+  .avatarWrap {
+    position: relative; width: 3.2em; height: 3.2em; border-radius: 50%;
+    transition: transform .25s ease;
+  }
+  .seatSlot .avatarWrap { font-size: 14px; }
+  .avatarImg {
+    position: absolute; inset: 0; width: 100%; height: 100%;
+    border-radius: 50%; object-fit: cover;
+    background: #3b3f4c; border: 2px solid #fff; box-sizing: border-box;
+  }
+  .avatarFallback {
+    position: absolute; inset: 0; border-radius: 50%;
+    display: flex; align-items: center; justify-content: center;
+    background: #3b3f4c; border: 2px dashed #6d7383; color: #9aa0af;
+    font-size: 1.1em; text-transform: uppercase;
+  }
+  .frameImg {
+    position: absolute; left: 0; top: 0; width: 100%; height: 100%;
+    transform: scale(1.35); pointer-events: none;
+  }
+  /* 轮到谁落子，谁的头像放大，另一方缩小 */
+  .seatSlot.isTurn .avatarWrap { transform: scale(1.16); }
+  .seatSlot.isTurn .seatName { color: #ffd479; font-weight: 600; }
+  .seatSlot.isOther .avatarWrap { transform: scale(.84); opacity: .75; }
+
+  /* 聊天气泡：白底圆角 + 底部尖角朝下（对齐音乐房气泡）。
+     外层不再 overflow:hidden，尖角才能露出；两行裁剪放到内部 .bubbleText */
+  .bubble {
+    position: absolute; left: 50%; bottom: calc(100% + 8px);
+    /* 绝对定位在窄锚点内会被压成一条竖线，用 max-content 让宽度跟随内容 */
+    width: max-content; max-width: 10em;
+    padding: .4em .7em; border-radius: 10px;
+    background: #fff; color: #2a2c33;
+    font-size: 12px; line-height: 1.4; text-align: left;
+    box-shadow: 0 4px 12px rgba(0,0,0,.16);
+    opacity: 0; pointer-events: none; z-index: 30;
+    transform: translateX(-50%) scale(.9);
+    transition: opacity .15s ease, transform .15s ease;
+  }
+  /* 消息文本：最多两行省略号（完整内容看下方聊天记录） */
+  .bubbleText {
+    display: -webkit-box;
+    -webkit-box-orient: vertical;
+    -webkit-line-clamp: 2;
+    overflow: hidden;
+    word-break: break-word;
+  }
+  /* 尖角：白色菱形悬在气泡底部中央，指向头像 */
+  .bubbleArrow {
+    position: absolute; left: 50%; bottom: -5px;
+    width: 10px; height: 10px; border-radius: 2px;
+    background: #fff;
+    transform: translateX(-50%) rotate(45deg);
+    z-index: -1;
+  }
+  .bubble.show { opacity: 1; transform: translateX(-50%) scale(1); }
+
+  .sectionTitle { font-size: 12px; color: #8b90a0; margin-bottom: 8px; }
+  .watcherList { display: flex; flex-wrap: wrap; gap: 8px; }
+  .watcher {
+    position: relative; width: 3.6em;
+    display: flex; flex-direction: column; align-items: center; gap: 4px;
+  }
+  .watcher .avatarWrap { width: 2.4em; height: 2.4em; }
+  .watcher .bubble { max-width: 12em; }
+  .watcherNick {
+    max-width: 100%; font-size: 11px; color: #b9bdc7;
+    overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  }
+  .emptyHint { font-size: 12px; color: #6f7484; }
+
+  button {
+    padding: 6px 12px; border: 0; border-radius: 6px; cursor: pointer;
+    background: #3d6fd6; color: #fff; font-size: 13px;
+  }
+  button.ghost { background: #3a3e4a; }
+  button:disabled { opacity: .5; cursor: not-allowed; }
+  /* 聊天卡片占满侧栏剩余高度，log 内部滚动 */
+  .chatCard {
+    flex: 1 1 auto;
+    display: flex; flex-direction: column;
+    min-height: 0;
+  }
+  .log { flex: 1 1 auto; max-height: none; min-height: 0; overflow-y: auto; font-size: 12px; line-height: 1.6; color: #b9bdc7; }
+  .chatRow { display: flex; gap: 6px; align-items: baseline; }
+  .chatTime { flex: 0 0 auto; color: #6f7484; font-variant-numeric: tabular-nums; }
+  .result { font-weight: 600; color: #ffd479; }
+  .toast {
+    position: absolute; left: 50%; top: 16px; transform: translateX(-50%);
+    background: rgba(200, 60, 60, .95); color: #fff; padding: 8px 16px;
+    border-radius: 6px; font-size: 13px; opacity: 0; transition: opacity .2s;
+    pointer-events: none; z-index: 100;
+  }
+  .toast.show { opacity: 1; }
+  .hint { font-size: 12px; color: #8b90a0; }
+
+  /* 右下角全屏按钮 */
+  .fsBtn {
+    position: absolute; right: 16px; bottom: 16px; z-index: 90;
+    width: 40px; height: 40px; padding: 0; border-radius: 10px;
+    display: flex; align-items: center; justify-content: center;
+    background: rgba(38, 41, 51, .82); color: #eaeaea;
+    border: 1px solid rgba(255, 255, 255, .12);
+    box-shadow: 0 4px 14px rgba(0, 0, 0, .35);
+    cursor: pointer; transition: background .2s ease, transform .1s ease;
+  }
+  .fsBtn:hover { background: rgba(61, 111, 214, .92); }
+  .fsBtn:active { transform: scale(.92); }
+  .fsBtn svg { width: 20px; height: 20px; display: block; }
+  /* 进入全屏后只显示“退出全屏”图标 */
+  .fsBtn .iconExit { display: none; }
+  .fsBtn.isFullscreen .iconEnter { display: none; }
+  .fsBtn.isFullscreen .iconExit { display: block; }
+
+  /* 玩法切换（围棋 / 五子棋） */
+  .modeSwitch {
+    display: inline-flex; gap: 2px; padding: 2px;
+    background: #2b2f3a; border-radius: 999px;
+  }
+  .modeBtn {
+    padding: 3px 10px; border: 0; border-radius: 999px;
+    background: transparent; color: #9aa0af;
+    font-size: 12px; line-height: 1.4; cursor: pointer;
+  }
+  .modeBtn:hover { color: #eaeaea; }
+  .modeBtn.isActive { background: #3d6fd6; color: #fff; }
+  .modeBtn:disabled { cursor: not-allowed; opacity: .55; }
+
+  /* 顶部：本局用时 */
+  .gameTime {
+    font-size: 13px; font-weight: 600; color: #b9bdc7;
+    padding: 1px 8px; border-radius: 10px; background: #2b2f3a;
+    font-variant-numeric: tabular-nums; white-space: nowrap;
+  }
+  /* 回合倒计时：显示在当前出棋人的座位头像上方 */
+  .turnClock {
+    position: absolute; left: 50%; top: 2px;
+    transform: translateX(-50%);
+    font-size: 11px; font-weight: 700; color: #ffd479;
+    padding: 1px 7px; border-radius: 8px;
+    /* 浅色半透明底，避免深色块压住头像 */
+    background: rgba(255, 255, 255, .16);
+    border: 1px solid rgba(255, 255, 255, .24);
+    white-space: nowrap; z-index: 20;
+  }
+  .turnClock.isUrgent {
+    color: #ff4d4f;
+    animation: myTurnPulse 1s ease-in-out infinite;
+  }
+
+  /* 终局结果弹窗 */
+  .resultOverlay {
+    position: absolute; inset: 0; z-index: 200;
+    display: flex; align-items: center; justify-content: center;
+    background: rgba(10, 11, 16, .62);
+    animation: overlayIn .22s ease both;
+  }
+  .resultOverlay[hidden] { display: none; }
+  .resultCard {
+    position: relative; width: min(88vw, 340px);
+    padding: 20px 20px 18px; border-radius: 16px; text-align: center;
+    background: linear-gradient(180deg, #313748, #232734);
+    border: 1px solid rgba(255, 255, 255, .09);
+    box-shadow: 0 18px 48px rgba(0, 0, 0, .55);
+    animation: cardPop .45s cubic-bezier(.2, 1.4, .4, 1) both;
+    overflow: hidden;
+  }
+  .resultBadge {
+    font-size: 11px; letter-spacing: .32em; color: #8b90a0;
+    margin-bottom: 8px; text-indent: .32em;
+  }
+  .resultHeadline { font-size: 24px; font-weight: 800; line-height: 1.25; }
+  .resultHeadline.isWin { color: #ffd479; text-shadow: 0 0 18px rgba(255, 212, 121, .45); }
+  .resultHeadline.isLose { color: #9aa0af; }
+  .resultHeadline.isDraw { color: #9fd0ff; }
+  .resultDetail { margin-top: 8px; font-size: 13px; color: #b9bdc7; line-height: 1.6; }
+  .resultActions { display: flex; gap: 8px; justify-content: center; margin-top: 18px; }
+  .resultFx { position: absolute; inset: 0; pointer-events: none; }
+  .resultFx span {
+    position: absolute; left: 50%; top: 42%;
+    width: 6px; height: 10px; border-radius: 1px;
+    opacity: 0;
+    animation: fxFly 1000ms ease-out forwards;
+    animation-delay: var(--delay, 0ms);
+  }
+  @keyframes overlayIn { from { opacity: 0; } to { opacity: 1; } }
+  @keyframes cardPop {
+    from { transform: scale(.82) translateY(8px); opacity: 0; }
+    to { transform: scale(1) translateY(0); opacity: 1; }
+  }
+  @keyframes fxFly {
+    0% { transform: translate(-50%, -50%) rotate(0deg) scale(.5); opacity: 1; }
+    70% { opacity: 1; }
+    100% { transform: translate(calc(-50% + var(--dx)), calc(-50% + var(--dy))) rotate(var(--rot)) scale(1); opacity: 0; }
+  }
+</style>
+</head>
+<body>
+  <div class="page" id="page">
+  <div class="topbar">
+    <div class="topbarSide topbarLeft">
+      <span class="turn" id="turn">等待连接…</span>
+      <span class="myTurn" id="myTurn" hidden>请你出棋</span>
+      <span class="gameTime" id="gameTime" hidden></span>
+    </div>
+    <div class="topbarCenter">
+      <span class="modeSwitch" id="modeSwitch" title="切换玩法（对局中不可切换）">
+        <button type="button" class="modeBtn" data-mode="go">围棋</button>
+        <button type="button" class="modeBtn" data-mode="gomoku">五子棋</button>
+      </span>
+    </div>
+    <div class="topbarSide topbarRight">
+      <span class="hint" id="connState"></span>
+    </div>
+  </div>
+
+  <div class="layout">
+    <div class="boardWrap">
+      <div class="grid" id="grid"></div>
+    </div>
+
+    <div class="side">
+      <!-- 玩家列表：两个座位（黑/白）+ 观战成员，座位默认空位，点击即上座 -->
+      <div class="card playersCard">
+        <div class="seatList">
+          <div class="seatSlot" id="seatBlack" data-color="1" title="点击坐在黑方">
+            <div class="turnClock" id="clockBlack" hidden></div>
+            <div class="seatColorBadge black" title="黑方"></div>
+            <div class="avatarHost">
+              <div class="bubble">
+                <span class="bubbleText"></span>
+                <span class="bubbleArrow"></span>
+              </div>
+              <div class="avatarWrap">
+                <div class="avatarFallback">+</div>
+                <img class="avatarImg" alt="" hidden>
+                <img class="frameImg" alt="" hidden>
+              </div>
+            </div>
+            <div class="seatName">空位 · 点击上座</div>
+          </div>
+          <div class="seatSlot" id="seatWhite" data-color="2" title="点击坐在白方">
+            <div class="turnClock" id="clockWhite" hidden></div>
+            <div class="seatColorBadge white" title="白方"></div>
+            <div class="avatarHost">
+              <div class="bubble">
+                <span class="bubbleText"></span>
+                <span class="bubbleArrow"></span>
+              </div>
+              <div class="avatarWrap">
+                <div class="avatarFallback">+</div>
+                <img class="avatarImg" alt="" hidden>
+                <img class="frameImg" alt="" hidden>
+              </div>
+            </div>
+            <div class="seatName">空位 · 点击上座</div>
+          </div>
+        </div>
+
+        <!-- 操作按钮：同一行，位于座位（头像）区下方 -->
+        <div class="seatActions">
+          <button id="btnStart">开始对局</button>
+          <button id="btnLeaveSeat" class="ghost">离座</button>
+          <button id="btnPass" class="ghost">停一手</button>
+          <button id="btnResign" class="ghost">认输</button>
+        </div>
+        <div class="result" id="result"></div>
+      </div>
+
+      <div class="card">
+        <div class="sectionTitle">观战成员</div>
+        <div class="watcherList" id="watchers"></div>
+        <div class="emptyHint" id="watchersEmpty">暂无观战成员</div>
+      </div>
+
+      <div class="card chatCard">
+        <div class="sectionTitle">游戏内聊天（来自聊天室）</div>
+        <div class="log" id="chatLog"></div>
+      </div>
+    </div>
+  </div>
+
+  <div class="toast" id="toast"></div>
+
+  <!-- 右下角全屏按钮：点击进入全屏，再点或按 ESC 退出 -->
+  <button type="button" class="fsBtn" id="fullscreenBtn" title="全屏" aria-label="全屏">
+    <svg class="iconEnter" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+      <path d="M4 9V4h5M20 9V4h-5M4 15v5h5M20 15v5h-5"/>
+    </svg>
+    <svg class="iconExit" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+      <path d="M9 4v5H4M15 4v5h5M9 20v-5H4M15 20v-5h5"/>
+    </svg>
+  </button>
+
+  <!-- 终局结果特效弹窗 -->
+  <div class="resultOverlay" id="resultOverlay" hidden>
+    <div class="resultCard" id="resultCard">
+      <div class="resultFx" id="resultFx" aria-hidden="true"></div>
+      <div class="resultBadge">对局结束</div>
+      <div class="resultHeadline" id="resultHeadline"></div>
+      <div class="resultDetail" id="resultDetail"></div>
+      <div class="resultActions">
+        <button id="btnAgain">再来一局</button>
+        <button id="btnResetGame" class="ghost">重置对局</button>
+        <button id="btnCloseResult" class="ghost">关闭</button>
+      </div>
+    </div>
+  </div>
+  </div>
+
+<script>
+(function () {
+  // 头像气泡展示时长与截断长度，与音乐房保持一致
+  const BUBBLE_MS = 30000
+  const BUBBLE_LIMIT = 35
+
+  const inIframe = window.parent !== window
+  let ws = null
+  let token = ''
+  let tokenExpireAt = 0
+  let myNick = ''
+  let myAvatar = ''
+  let myFrameId = 0
+  let myFrame = ''
+  let snapshot = null
+  // 服务端时间 - 本地时间，用于倒计时抵消两端时钟差异
+  let clockSkew = 0
+  // 上一帧对局阶段，用于识别“刚刚终局”
+  let lastPhase = null
+  // 上一帧手数：用于识别“有新落子”（只播一手音效，不重复历史）
+  let lastMoveCount = -1
+  // 聊天室文件服务器地址（铃声等资源），可由外壳 INIT 下发或从头像地址推导
+  let fileServerHost = ''
+  // 聊天提示音（与音乐房同一音源）
+  let ringAudio = null
+  let audioUnlocked = false
+  // 结果弹窗是否已展示（避免弹窗被后续快照重复触发）
+  let resultShown = false
+  let reconnectTimer = null
+  // 当前鼠标悬停的交叉点，用于半透明落子预览
+  let hover = null
+  // 头像气泡：nick -> { text, timer }
+  const bubbles = new Map()
+  let watcherSig = ''
+  // 全屏状态：iframe 内由外壳的 FULLSCREEN_CHANGE 告知，独立标签页由自身 fullscreenchange 跟踪
+  let isFullscreen = false
+
+  const grid = document.getElementById('grid')
+  const toastEl = document.getElementById('toast')
+  const seatEls = {
+    1: document.getElementById('seatBlack'),
+    2: document.getElementById('seatWhite')
+  }
+
+  function toast (msg) {
+    toastEl.textContent = msg
+    toastEl.classList.add('show')
+    clearTimeout(toastEl._t)
+    toastEl._t = setTimeout(() => toastEl.classList.remove('show'), 2500)
+  }
+
+  // ---------- 获取令牌 ----------
+
+  // 模板A：走 postMessage 向外壳请求令牌
+  function requestTokenFromShell () {
+    window.parent.postMessage({ type: 'REQUEST_TOKEN' }, '*')
+  }
+
+  // 模板B：票据在 URL fragment 中，交给本服务端向聊天室兑换
+  async function exchangeTicket () {
+    const hash = (location.hash || '').replace(/^#/, '')
+    const params = new URLSearchParams(hash)
+    const ticket = params.get('ticket')
+    if (!ticket) {
+      toast('缺少票据，请从房间重新进入')
+      return
+    }
+    // 立即清除 URL 中的票据
+    try { history.replaceState(null, '', location.pathname) } catch (e) {}
+    try {
+      const resp = await fetch('/exchange', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ ticket })
+      })
+      if (!resp.ok) {
+        toast('票据兑换失败')
+        return
+      }
+      const data = await resp.json()
+      onToken(data.token, 0, data.nick)
+    } catch (e) {
+      toast('票据兑换失败')
+    }
+  }
+
+  function onToken (value, expireAt, nick) {
+    const sameToken = value === token
+    token = value
+    tokenExpireAt = expireAt || 0
+    if (nick) myNick = nick
+    // 令牌没变且连接还活着，就不要重连
+    if (sameToken && ws && ws.readyState === WebSocket.OPEN) return
+    connect()
+  }
+
+  // 模板A：接收外壳下发的初始化配置与令牌
+  window.addEventListener('message', function (event) {
+    const data = event.data || {}
+    if (data.type === 'INIT') {
+      if (data.config && data.config.roomId) {
+        // 房间信息可用于展示，但不能当作可信身份
+      }
+      // 铃声等资源从聊天室的文件服务器加载（与音乐房同一音源）
+      if (data.config) setFileServerHost(data.config.fileServerHost)
+    }
+    if (data.type === 'TOKEN' && data.token) {
+      onToken(data.token, data.expireAt, '')
+    }
+    // 外壳告知当前全屏状态（含用户按 ESC 退出），用于同步按钮图标
+    if (data.type === 'FULLSCREEN_CHANGE') {
+      setFullscreenState(!!data.value)
+    }
+  })
+
+  // 令牌剩余时间不足时先刷新（重连前检查）
+  function tokenRemain () {
+    if (!tokenExpireAt) return Infinity
+    return tokenExpireAt - Math.floor(Date.now() / 1000)
+  }
+
+  function reconnect () {
+    if (reconnectTimer) return
+    const delay = tokenRemain() < 120 ? 3000 : 2000
+    reconnectTimer = setTimeout(() => {
+      reconnectTimer = null
+      if (tokenRemain() < 120) {
+        // 需要新令牌：模板A 向外壳请求，模板B 提示重新进入
+        if (inIframe) requestTokenFromShell()
+        else toast('凭证已过期，请从房间重新进入')
+        return
+      }
+      connect()
+    }, delay)
+  }
+
+  // ---------- 游戏连接 ----------
+
+  // 关闭旧连接并摘除回调，避免旧连接的回调触发新一轮重连
+  function closeSocket () {
+    if (!ws) return
+    try {
+      ws.onopen = null
+      ws.onmessage = null
+      ws.onclose = null
+      ws.onerror = null
+      ws.close()
+    } catch (e) {}
+    ws = null
+  }
+
+  function connect () {
+    if (!token) return
+    // 同一时刻只允许一条连接：先关掉旧的，否则服务端会按"同昵称顶号"互相踢人，
+    // 被踢的一方又触发重连，形成 2 秒一次的风暴
+    closeSocket()
+
+    setConn('连接中…')
+    const proto = location.protocol === 'https:' ? 'wss:' : 'ws:'
+    const sock = new WebSocket(proto + '//' + location.host + '/ws?token=' + encodeURIComponent(token))
+    ws = sock
+
+    sock.onopen = function () {
+      if (ws !== sock) return
+      setConn('已连接')
+    }
+    sock.onmessage = function (event) {
+      if (ws !== sock) return
+      let msg
+      try { msg = JSON.parse(event.data) } catch (e) { return }
+      if (msg.type === 'welcome') {
+        // 服务端单独告知本连接的身份与展示资料
+        myNick = msg.nick || myNick
+        myAvatar = msg.avatar || ''
+        myFrameId = msg.frameId || 0
+        myFrame = msg.frame || ''
+        // 重连后不重放历史落子音效：重新以当前手数为基准
+        lastMoveCount = -1
+        if (snapshot) render()
+      } else if (msg.type === 'state') {
+        snapshot = msg
+        syncClock(msg.serverNow)
+        render()
+        trackNewMoves(msg.game)
+      } else if (msg.type === 'chat') {
+        addChat(msg.nick, msg.text, msg.avatar, msg.frame, msg.timestamp)
+      } else if (msg.type === 'shell_control') {
+        // 服务端下发的外壳控制指令（如全屏开关）
+        handleShellControl(msg)
+      } else if (msg.type === 'error') {
+        toast(msg.message || '操作失败')
+      }
+    }
+    sock.onclose = function (event) {
+      // 只处理"当前这条连接"的关闭；已被新连接替换的旧连接不再触发重连
+      if (ws !== sock) return
+      ws = null
+      setConn('已断开 code=' + event.code)
+      // 4001/4002 等不可重试码不重连
+      if ([4001, 4002, 4003, 4005, 4006].includes(event.code)) return
+      reconnect()
+    }
+    sock.onerror = function () {
+      if (ws !== sock) return
+      setConn('连接异常')
+    }
+  }
+
+  function setConn (text) {
+    document.getElementById('connState').textContent = text
+  }
+
+  function send (payload) {
+    if (!ws || ws.readyState !== WebSocket.OPEN) {
+      toast('未连接到游戏服务')
+      return
+    }
+    ws.send(JSON.stringify(payload))
+  }
+
+  // ---------- 聊天提示音 ----------
+
+  // 与音乐房一致的默认铃声
+  const RING_NAME = 'bibi.mp3'
+
+  function setFileServerHost (host) {
+    if (!host) return
+    fileServerHost = String(host).replace(/\/+$/, '')
+  }
+
+  // 头像地址形如 <文件服务器>/avatar/<id>.jpg，可反推文件服务器地址
+  function hostFromAvatar (url) {
+    if (!url) return ''
+    const idx = String(url).indexOf('/avatar/')
+    return idx > 0 ? String(url).slice(0, idx) : ''
+  }
+
+  function ringSrc () {
+    let base = fileServerHost || hostFromAvatar(myAvatar)
+    if (!base && snapshot && Array.isArray(snapshot.users)) {
+      const withAvatar = snapshot.users.find(u => hostFromAvatar(u.avatar))
+      if (withAvatar) base = hostFromAvatar(withAvatar.avatar)
+    }
+    return base ? base + '/music/' + RING_NAME : ''
+  }
+
+  function playRing () {
+    const src = ringSrc()
+    if (!src) return
+    if (!ringAudio) {
+      ringAudio = new Audio()
+      ringAudio.preload = 'auto'
+    }
+    if (ringAudio.src !== src) ringAudio.src = src
+    try { ringAudio.currentTime = 0 } catch (e) {}
+    const task = ringAudio.play()
+    // 浏览器自动播放限制导致的失败不打扰用户
+    if (task && task.catch) task.catch(() => {})
+  }
+
+  // 浏览器要求先有用户交互才允许播放音频：首次交互时静默解锁一次
+  function unlockRing () {
+    if (audioUnlocked) return
+    const src = ringSrc()
+    if (!src) return
+    if (!ringAudio) {
+      ringAudio = new Audio()
+      ringAudio.preload = 'auto'
+    }
+    ringAudio.muted = true
+    ringAudio.src = src
+    const task = ringAudio.play()
+    const done = () => {
+      ringAudio.pause()
+      ringAudio.currentTime = 0
+      ringAudio.muted = false
+      audioUnlocked = true
+    }
+    if (task && task.then) {
+      task.then(done).catch(() => { ringAudio.muted = false })
+    } else {
+      done()
+    }
+  }
+
+  window.addEventListener('pointerdown', unlockRing)
+  window.addEventListener('keydown', unlockRing)
+
+  // ---------- 落子音效 ----------
+
+  // 素材为聊天室文件服务器的绝对地址
+  const CHESS_SOUND_URL = 'https://nichijou-1300531302.cos.ap-guangzhou.myqcloud.com/music/chess.mp3'
+  let chessAudio = null
+
+  function playChess () {
+    if (!chessAudio) {
+      chessAudio = new Audio(CHESS_SOUND_URL)
+      chessAudio.preload = 'auto'
+    }
+    // 快速连落时从头播
+    try { chessAudio.currentTime = 0 } catch (e) {}
+    const task = chessAudio.play()
+    if (task && task.catch) task.catch(() => {})
+  }
+
+  // 检测快照里是否有“新的真实落子”（非停手/非超时），有则响落子音效。
+  // 基准手数只在“对局进行中”维护：开局/终局/换局都会重置，避免把历史手重放。
+  function trackNewMoves (game) {
+    if (!game || game.phase !== 'playing') {
+      lastMoveCount = -1
+      return
+    }
+    const moves = game.moves || []
+    if (lastMoveCount < 0) {
+      lastMoveCount = moves.length
+      return
+    }
+    if (moves.length > lastMoveCount) {
+      lastMoveCount = moves.length
+      const m = moves[moves.length - 1]
+      if (m && !m.pass && !m.timeout) playChess()
+    }
+  }
+
+  // ---------- 棋局数据 ----------
+
+  // 棋盘路数：国际标准 19 路，固定不可配置；等待阶段也要先画出网格
+  const BOARD_SIZE = 19
+  function boardSize () {
+    if (!snapshot) return BOARD_SIZE
+    return snapshot.size || (snapshot.game && snapshot.game.size) || BOARD_SIZE
+  }
+
+  function seatNick (color) {
+    if (!snapshot || !snapshot.seats) return ''
+    return (color === 1 ? snapshot.seats.black : snapshot.seats.white) || ''
+  }
+
+  function myColor () {
+    if (!snapshot || !myNick) return 0
+    if (seatNick(1) === myNick) return 1
+    if (seatNick(2) === myNick) return 2
+    return 0
+  }
+
+  function userOf (nick) {
+    if (!snapshot || !nick || !snapshot.users) return null
+    return snapshot.users.find(u => u.nick === nick) || null
+  }
+
+  // 当前局面是否允许我落子（决定是否显示预览、点击是否发落子命令）
+  function canPlay () {
+    const color = myColor()
+    if (!color) return false
+    const game = snapshot.game
+    if (!game) return true
+    if (game.phase !== 'playing') return false
+    return game.turn === color
+  }
+
+  // ---------- 渲染 ----------
+
+  function render () {
+    if (!snapshot) return
+    const game = snapshot.game
+    renderBoard(game)
+    renderSeat(1, game)
+    renderSeat(2, game)
+    renderWatchers()
+    renderTurn(game)
+    renderButtons(game)
+    renderMode(game)
+    syncBubbles()
+    watchGamePhase(game)
+  }
+
+  // 玩法切换按钮：高亮当前玩法，对局中禁用
+  function renderMode (game) {
+    const mode = (snapshot && snapshot.mode) || 'go'
+    const playing = Boolean(game && game.phase === 'playing')
+    document.querySelectorAll('.modeBtn').forEach(btn => {
+      btn.classList.toggle('isActive', btn.dataset.mode === mode)
+      btn.disabled = playing
+    })
+  }
+
+  // 记录时钟偏差：后续倒计时统一用 本地时间 + 偏差 得到服务端时间
+  function syncClock (serverNow) {
+    if (typeof serverNow === 'number' && serverNow > 0) {
+      clockSkew = serverNow - Date.now()
+    }
+  }
+
+  // 对局从 playing 变为 ended 时弹出结果特效
+  function watchGamePhase (game) {
+    const phase = game ? game.phase : 'waiting'
+    if (phase === 'ended') {
+      if (lastPhase === 'playing' && !resultShown) showResult(game)
+    } else {
+      // 新一局或回到等待态：收起弹窗并允许下次重新触发
+      if (phase === 'playing') resultShown = false
+      hideResult()
+    }
+    lastPhase = phase
+  }
+
+  // 星位（标准棋盘）：19 路 9 个点，13 路与 9 路取各自的常用布局
+  const STAR_POINTS = {
+    19: [[3, 3], [3, 9], [3, 15], [9, 3], [9, 9], [9, 15], [15, 3], [15, 9], [15, 15]],
+    15: [[3, 3], [3, 7], [3, 11], [7, 3], [7, 7], [7, 11], [11, 3], [11, 7], [11, 11]],
+    13: [[3, 3], [3, 9], [9, 3], [9, 9], [6, 6]],
+    9: [[2, 2], [2, 6], [6, 2], [6, 6], [4, 4]]
+  }
+
+  function renderBoard (game) {
+    const size = boardSize()
+    const board = (game && game.board) || []
+
+    grid.style.setProperty('--n', size)
+    if (grid.dataset.size !== String(size)) {
+      grid.dataset.size = String(size)
+      grid.innerHTML = ''
+      const stars = new Set((STAR_POINTS[size] || []).map(([x, y]) => `${x},${y}`))
+      for (let y = 0; y < size; y++) {
+        for (let x = 0; x < size; x++) {
+          const p = document.createElement('div')
+          p.className = 'point'
+          p.dataset.x = x
+          p.dataset.y = y
+          // 最外一圈用于把边线画得加粗且平整（不超出交点）
+          if (x === 0) p.classList.add('edgeL')
+          if (x === size - 1) p.classList.add('edgeR')
+          if (y === 0) p.classList.add('edgeT')
+          if (y === size - 1) p.classList.add('edgeB')
+          if (stars.has(`${x},${y}`)) {
+            const dot = document.createElement('div')
+            dot.className = 'starDot'
+            p.appendChild(dot)
+          }
+          p.addEventListener('click', () => onPointClick(x, y))
+          grid.appendChild(p)
+        }
+      }
+    }
+
+    const last = game && game.moves && game.moves.length
+      ? game.moves[game.moves.length - 1]
+      : null
+    for (let y = 0; y < size; y++) {
+      for (let x = 0; x < size; x++) {
+        const p = grid.children[y * size + x]
+        const v = (board[y] && board[y][x]) || 0
+        let stone = p.querySelector('.stone:not(.previewStone)')
+        if (v === 0) {
+          if (stone) stone.remove()
+        } else {
+          const cls = v === 1 ? 'black' : 'white'
+          if (!stone || !stone.classList.contains(cls)) {
+            if (stone) stone.remove()
+            stone = document.createElement('div')
+            stone.className = 'stone ' + cls
+            p.appendChild(stone)
+          }
+        }
+        const isLast = last && !last.pass && last.x === x && last.y === y
+        p.classList.toggle('last', !!isLast)
+      }
+    }
+
+    grid.classList.toggle('canPlay', canPlay())
+    updatePreview()
+  }
+
+  // 半透明落子预览：停在空交叉点时显示己方棋子轮廓
+  function updatePreview () {
+    grid.querySelectorAll('.previewStone').forEach(el => el.remove())
+    if (!hover || !snapshot || !canPlay()) return
+    const size = boardSize()
+    const game = snapshot.game
+    const board = (game && game.board) || []
+    const row = board[hover.y]
+    if (row && row[hover.x]) return
+    const point = grid.children[hover.y * size + hover.x]
+    if (!point) return
+    const stone = document.createElement('div')
+    stone.className = 'stone previewStone ' + (myColor() === 1 ? 'black' : 'white')
+    point.appendChild(stone)
+  }
+
+  // 头像框地址：优先用令牌里的 frame URL；只给了 frameId 时从头像地址推导同一文件服务器
+  function frameSrc (avatar, frame, frameId) {
+    if (frame) return frame
+    if (frameId > 0 && avatar) {
+      return avatar.replace(/\/avatar\/[^/]+$/, `/frame/${frameId}.webp`)
+    }
+    return ''
+  }
+
+  // 单个座位：空位 -> 加号占位；有人 -> 头像 + 头像框
+  function renderSeat (color, game) {
+    const slot = seatEls[color]
+    if (!slot) return
+    const nick = seatNick(color)
+    const info = userOf(nick)
+    const isMe = Boolean(nick) && nick === myNick
+    const avatarUrl = (info && info.avatar) || (isMe ? myAvatar : '')
+    const frameUrl = info
+      ? frameSrc(info.avatar, info.frame, info.frameId)
+      : (isMe ? frameSrc(myAvatar, myFrame, myFrameId) : '')
+
+    const avatarImg = slot.querySelector('.avatarImg')
+    const frameImg = slot.querySelector('.frameImg')
+    const fallback = slot.querySelector('.avatarFallback')
+    const nameEl = slot.querySelector('.seatName')
+
+    if (avatarUrl) {
+      if (avatarImg.getAttribute('src') !== avatarUrl) avatarImg.setAttribute('src', avatarUrl)
+      avatarImg.hidden = false
+      fallback.hidden = true
+    } else {
+      avatarImg.hidden = true
+      avatarImg.removeAttribute('src')
+      fallback.hidden = false
+      fallback.textContent = nick ? nick.slice(0, 1) : '+'
+    }
+    if (frameUrl) {
+      if (frameImg.getAttribute('src') !== frameUrl) frameImg.setAttribute('src', frameUrl)
+      frameImg.hidden = false
+    } else {
+      frameImg.hidden = true
+      frameImg.removeAttribute('src')
+    }
+
+    nameEl.textContent = nick ? (isMe ? `${nick}（你）` : nick) : '空位 · 点击上座'
+    slot.dataset.bubble = nick
+    slot.classList.toggle('isOccupied', Boolean(nick))
+    slot.title = nick ? (isMe ? '点击离座' : `${nick} 已就座`) : '点击上座'
+
+    const playing = Boolean(game && game.phase === 'playing')
+    const isTurn = playing && Boolean(nick) && game.turn === color
+    slot.classList.toggle('isTurn', isTurn)
+    slot.classList.toggle('isOther', playing && Boolean(nick) && !isTurn)
+  }
+
+  // 观战成员：座位之外的连接用户，带头像与头像框
+  function renderWatchers () {
+    const box = document.getElementById('watchers')
+    const emptyEl = document.getElementById('watchersEmpty')
+    const users = (snapshot && snapshot.users) || []
+    const watchers = users.filter(u => u.nick !== seatNick(1) && u.nick !== seatNick(2))
+    const sig = watchers.map(u => `${u.nick}:${u.avatar || ''}:${u.frameId || 0}:${u.frame || ''}`).join('|')
+
+    if (sig !== watcherSig) {
+      watcherSig = sig
+      box.innerHTML = ''
+      watchers.forEach(user => {
+        const item = document.createElement('div')
+        item.className = 'watcher'
+        item.dataset.bubble = user.nick
+        item.title = user.nick
+
+        const bubble = document.createElement('div')
+        bubble.className = 'bubble'
+
+        const host = document.createElement('div')
+        host.className = 'avatarHost'
+        host.appendChild(bubble)
+
+        const wrap = document.createElement('div')
+        wrap.className = 'avatarWrap'
+        if (user.avatar) {
+          const img = document.createElement('img')
+          img.className = 'avatarImg'
+          img.alt = ''
+          img.src = user.avatar
+          wrap.appendChild(img)
+        } else {
+          const fb = document.createElement('div')
+          fb.className = 'avatarFallback'
+          fb.textContent = user.nick.slice(0, 1)
+          wrap.appendChild(fb)
+        }
+        if (user.frame || (user.frameId > 0 && user.avatar)) {
+          const frame = document.createElement('img')
+          frame.className = 'frameImg'
+          frame.alt = ''
+          frame.src = frameSrc(user.avatar, user.frame, user.frameId)
+          wrap.appendChild(frame)
+        }
+        host.appendChild(wrap)
+
+        const nameEl = document.createElement('div')
+        nameEl.className = 'watcherNick'
+        nameEl.textContent = user.nick
+
+        item.appendChild(host)
+        item.appendChild(nameEl)
+        box.appendChild(item)
+      })
+    }
+
+    emptyEl.hidden = watchers.length > 0
+  }
+
+  function renderTurn (game) {
+    const turnEl = document.getElementById('turn')
+    const myTurnEl = document.getElementById('myTurn')
+    const resultEl = document.getElementById('result')
+    const mySeatColor = myColor()
+
+    let showMyTurn = false
+    if (game) {
+      if (game.phase === 'playing') {
+        const isBlack = game.turn === 1
+        const nick = isBlack ? game.black : game.white
+        turnEl.innerHTML = (isBlack
+          ? '轮到 <span class="dot black"></span> 黑方'
+          : '轮到 <span class="dot white"></span> 白方') + (nick ? ' · ' + escapeHtml(nick) : '')
+        showMyTurn = mySeatColor === game.turn
+      } else if (game.phase === 'ended') {
+        turnEl.textContent = '对局结束'
+      } else {
+        turnEl.textContent = '等待开始'
+      }
+      resultEl.textContent = game.result || ''
+    } else {
+      const black = seatNick(1)
+      const white = seatNick(2)
+      if (black && white) turnEl.textContent = '双方就座，等待开始'
+      else if (black || white) turnEl.textContent = '等待另一位棋手就座'
+      else turnEl.textContent = '点击座位加入对局'
+      resultEl.textContent = ''
+    }
+    myTurnEl.hidden = !showMyTurn
+  }
+
+  function escapeHtml (text) {
+    return String(text).replace(/[&<>"']/g, c => ({
+      '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;'
+    }[c]))
+  }
+
+  function renderButtons (game) {
+    const seated = myColor() !== 0
+    const bothSeated = Boolean(seatNick(1) && seatNick(2))
+    const playing = Boolean(game && game.phase === 'playing')
+    const startBtn = document.getElementById('btnStart')
+    // 终局后同一个按钮直接重开一局
+    startBtn.textContent = game && game.phase === 'ended' ? '再来一局' : '开始对局'
+    startBtn.disabled = !bothSeated || playing
+    document.getElementById('btnLeaveSeat').disabled = !seated
+    document.getElementById('btnPass').disabled = !(playing && seated)
+    document.getElementById('btnResign').disabled = !(playing && seated)
+  }
+
+  // ---------- 回合倒计时 ----------
+
+  function formatClock (seconds) {
+    const m = Math.floor(seconds / 60)
+    const s = seconds % 60
+    return m + ':' + String(s).padStart(2, '0')
+  }
+
+  // 倒计时以服务端 turnDeadline 为准，本地只负责每秒重绘。
+  // 位置：当前该出棋一方的座位头像上方（黑座 clockBlack / 白座 clockWhite）
+  function tickCountdown () {
+    const game = snapshot && snapshot.game
+    const activeTurn = game && game.phase === 'playing' ? game.turn : 0
+    for (const color of [1, 2]) {
+      const el = document.getElementById(color === 1 ? 'clockBlack' : 'clockWhite')
+      if (!el) continue
+      const show = activeTurn === color && game.turnDeadline > 0
+      el.hidden = !show
+      if (!show) continue
+      const remainMs = game.turnDeadline - (Date.now() + clockSkew)
+      const remain = Math.max(0, Math.ceil(remainMs / 1000))
+      el.textContent = '剩余 ' + formatClock(remain)
+      el.classList.toggle('isUrgent', remain <= 10)
+    }
+  }
+
+  // 本局用时：以开局时刻 startedAt 为准，配合时钟偏差本地每秒重绘
+  function tickGameTime () {
+    const el = document.getElementById('gameTime')
+    const game = snapshot && snapshot.game
+    if (!game || !game.startedAt) {
+      el.hidden = true
+      el.textContent = ''
+      return
+    }
+    const elapsed = Math.max(0, Math.floor(((Date.now() + clockSkew) - game.startedAt) / 1000))
+    el.hidden = false
+    el.textContent = '本局用时 ' + formatClock(elapsed)
+  }
+
+  // ---------- 终局结果特效 ----------
+
+  const FX_COLORS = ['#ffd479', '#ff7a7a', '#7ad3ff', '#9bf6c3', '#c9a7ff']
+
+  function showResult (game) {
+    const overlay = document.getElementById('resultOverlay')
+    const headline = document.getElementById('resultHeadline')
+    const detail = document.getElementById('resultDetail')
+    const fx = document.getElementById('resultFx')
+    const mySeatColor = myColor()
+
+    let text = '平局'
+    let cls = 'isDraw'
+    if (game.abandoned) {
+      // 棋手离房导致作废：没有胜方，不能显示成平局
+      text = '对局中止'
+      cls = 'isLose'
+    } else if (game.winner) {
+      if (game.winner === myNick) {
+        text = '你赢了！'
+        cls = 'isWin'
+      } else if (mySeatColor) {
+        text = '你输了'
+        cls = 'isLose'
+      } else {
+        text = `${game.winner} 获胜`
+        cls = 'isWin'
+      }
+    }
+    headline.textContent = text
+    headline.className = 'resultHeadline ' + cls
+
+    const lines = []
+    if (game.result) lines.push(escapeHtml(game.result))
+    if (game.black || game.white) {
+      lines.push(`黑方 ${escapeHtml(game.black || '—')} · 白方 ${escapeHtml(game.white || '—')}`)
+    }
+    detail.innerHTML = lines.join('<br>')
+
+    // 彩带特效：每次随机方向飞散
+    fx.innerHTML = ''
+    for (let i = 0; i < 24; i++) {
+      const piece = document.createElement('span')
+      const angle = Math.random() * Math.PI * 2
+      const radius = 70 + Math.random() * 90
+      piece.style.background = FX_COLORS[i % FX_COLORS.length]
+      piece.style.setProperty('--dx', Math.cos(angle) * radius + 'px')
+      piece.style.setProperty('--dy', Math.sin(angle) * radius + 'px')
+      piece.style.setProperty('--rot', Math.round(Math.random() * 720 - 360) + 'deg')
+      piece.style.setProperty('--delay', Math.round(Math.random() * 180) + 'ms')
+      fx.appendChild(piece)
+    }
+
+    overlay.hidden = false
+    resultShown = true
+  }
+
+  function hideResult () {
+    const overlay = document.getElementById('resultOverlay')
+    if (overlay && !overlay.hidden) overlay.hidden = true
+  }
+
+  // ---------- 头像气泡 ----------
+
+  function showBubble (nick, text) {
+    if (!nick || !text) return
+    const fixed = text.length > BUBBLE_LIMIT ? text.slice(0, BUBBLE_LIMIT) + '...' : text
+    const prev = bubbles.get(nick)
+    if (prev && prev.timer) clearTimeout(prev.timer)
+    const timer = setTimeout(() => {
+      bubbles.delete(nick)
+      syncBubbles()
+    }, BUBBLE_MS)
+    bubbles.set(nick, { text: fixed, timer })
+    syncBubbles()
+  }
+
+  // 把气泡内容写回所有头像节点（座位与观战成员）
+  function syncBubbles () {
+    document.querySelectorAll('[data-bubble]').forEach(el => {
+      const nick = el.dataset.bubble
+      const item = nick ? bubbles.get(nick) : null
+      const bubbleEl = el.classList.contains('bubble') ? el : el.querySelector('.bubble')
+      if (!bubbleEl) return
+      const textEl = bubbleEl.querySelector('.bubbleText')
+      if (!textEl) return
+      const text = item ? item.text : ''
+      if (textEl.textContent !== text) textEl.textContent = text
+      bubbleEl.classList.toggle('show', Boolean(text))
+    })
+  }
+
+  function addChat (nick, text, avatar, frame, timestamp) {
+    const log = document.getElementById('chatLog')
+    const row = document.createElement('div')
+    row.className = 'chatRow'
+    const timeEl = document.createElement('span')
+    timeEl.className = 'chatTime'
+    timeEl.textContent = formatChatTime(timestamp)
+    const bodyEl = document.createElement('span')
+    bodyEl.textContent = (nick ? nick + ': ' : '') + text
+    row.appendChild(timeEl)
+    row.appendChild(bodyEl)
+    log.appendChild(row)
+    log.scrollTop = log.scrollHeight
+    // 消息到达即响铃（与音乐房一致，自己发的也会响）
+    playRing()
+    // 头像资料以房间快照为准，快照缺失时用消息自带的资料兜底
+    if (nick && !userOf(nick) && (avatar || frame)) {
+      if (!snapshot) return
+      snapshot.users = (snapshot.users || []).concat([{ nick, avatar, frame, state: 'spectating' }])
+      render()
+    }
+    showBubble(nick, text)
+  }
+
+  function formatChatTime (timestamp) {
+    const date = timestamp > 0 ? new Date(timestamp * 1000) : new Date()
+    return `${String(date.getHours()).padStart(2, '0')}:${String(date.getMinutes()).padStart(2, '0')}`
+  }
+
+  // ---------- 交互 ----------
+
+  function onPointClick (x, y) {
+    if (!snapshot) return
+    if (!canPlay()) {
+      if (!myColor()) return
+      toast(snapshot.game ? '还没轮到你落子' : '对局尚未开始')
+      return
+    }
+    send({ type: 'place', x, y })
+  }
+
+  // 用 Pointer Events 计算交叉点（鼠标 / 触摸 / 手写笔通用）：
+  // 移动/按下时显示预览，抬起/离开时隐藏；快速划过也不会漏掉。
+  function updatePointerHover (event) {
+    const size = boardSize()
+    const rect = grid.getBoundingClientRect()
+    const cell = rect.width / size
+    if (!cell) return
+    const x = Math.floor((event.clientX - rect.left) / cell)
+    const y = Math.floor((event.clientY - rect.top) / cell)
+    if (x < 0 || y < 0 || x >= size || y >= size) {
+      setHover(null)
+      return
+    }
+    if (!hover || hover.x !== x || hover.y !== y) setHover({ x, y })
+  }
+
+  grid.addEventListener('pointermove', updatePointerHover)
+  // 触屏按下即预览（手指未抬起也能看到落点）
+  grid.addEventListener('pointerdown', updatePointerHover)
+  grid.addEventListener('pointerup', () => setHover(null))
+  grid.addEventListener('pointercancel', () => setHover(null))
+  grid.addEventListener('pointerleave', () => setHover(null))
+
+  function setHover (next) {
+    hover = next
+    updatePreview()
+  }
+
+  function onSeatClick (color) {
+    if (!snapshot) return
+    const nick = seatNick(color)
+    if (nick === myNick) {
+      send({ type: 'leave_seat' })
+      return
+    }
+    if (nick) {
+      toast(`该座位已被 ${nick} 占用`)
+      return
+    }
+    send({ type: 'sit', color })
+  }
+
+  document.querySelectorAll('.modeBtn').forEach(btn => {
+    btn.addEventListener('click', () => {
+      if (!snapshot) return
+      if (snapshot.game && snapshot.game.phase === 'playing') {
+        toast('对局进行中，不能切换玩法')
+        return
+      }
+      if (btn.dataset.mode === snapshot.mode) return
+      send({ type: 'set_mode', mode: btn.dataset.mode })
+    })
+  })
+
+  seatEls[1].addEventListener('click', () => onSeatClick(1))
+  seatEls[2].addEventListener('click', () => onSeatClick(2))
+
+  // ---------- 等比缩放 ----------
+
+  // 设计画布固定为 1024x768（4:3，与外壳 canvasRatio 一致），
+  // 视口任意大小都整体按比例缩放，内容展示比例保持不变。
+  const PAGE_W = 1024
+  const PAGE_H = 768
+  const pageEl = document.getElementById('page')
+
+  function fitPage () {
+    if (!pageEl) return
+    const scale = Math.min(innerWidth / PAGE_W, innerHeight / PAGE_H)
+    pageEl.style.transform = 'translate(-50%, -50%) scale(' + scale + ')'
+  }
+
+  window.addEventListener('resize', fitPage)
+  fitPage()
+
+  // ---------- 全屏 ----------
+
+  const fullscreenBtn = document.getElementById('fullscreenBtn')
+
+  // 点击图标：把目标状态发给游戏服务端，由服务端回发 shell_control 指挥外壳全屏。
+  // 走服务端是让玩法服务端掌握外壳控制权（协议能力），图标这里只是触发入口。
+  fullscreenBtn.addEventListener('click', () => {
+    const next = !isFullscreen
+    if (ws && ws.readyState === WebSocket.OPEN) {
+      send({ type: 'fullscreen', value: next })
+    } else {
+      // 未连上游戏服务时本地兜底，保证按钮仍可用
+      applyFullscreen(next)
+    }
+  })
+
+  // 收到服务端的外壳控制指令后执行
+  function handleShellControl (msg) {
+    if (msg.action === 'fullscreen') applyFullscreen(!!msg.value)
+  }
+
+  // 真正触发全屏：iframe 内交给外壳处理（作用于游戏区域），独立标签页作用于自身文档
+  function applyFullscreen (on) {
+    if (inIframe) {
+      window.parent.postMessage({ type: 'FULLSCREEN_REQUEST', value: on }, '*')
+      return
+    }
+    if (on) {
+      const el = document.documentElement
+      const req = el.requestFullscreen || el.webkitRequestFullscreen
+      if (req) {
+        const task = req.call(el)
+        if (task && task.catch) task.catch(() => {})
+      }
+    } else if (document.fullscreenElement) {
+      (document.exitFullscreen || document.webkitExitFullscreen || function () {}).call(document)
+    }
+  }
+
+  // 同步按钮图标：全屏时显示“退出全屏”
+  function setFullscreenState (on) {
+    isFullscreen = on
+    fullscreenBtn.classList.toggle('isFullscreen', on)
+    fullscreenBtn.title = on ? '退出全屏' : '全屏'
+    fullscreenBtn.setAttribute('aria-label', on ? '退出全屏' : '全屏')
+  }
+
+  // 独立标签页用自身的 fullscreenchange 跟踪状态（含 ESC 退出）；iframe 内由外壳告知
+  if (!inIframe) {
+    document.addEventListener('fullscreenchange', () => {
+      setFullscreenState(Boolean(document.fullscreenElement))
+    })
+  }
+
+  document.getElementById('btnLeaveSeat').onclick = () => send({ type: 'leave_seat' })
+  document.getElementById('btnStart').onclick = () => send({ type: 'start' })
+  document.getElementById('btnPass').onclick = () => send({ type: 'pass' })
+  document.getElementById('btnResign').onclick = () => send({ type: 'resign' })
+
+  // 终局弹窗操作
+  document.getElementById('btnAgain').onclick = () => {
+    hideResult()
+    send({ type: 'start' })
+  }
+  document.getElementById('btnResetGame').onclick = () => {
+    hideResult()
+    send({ type: 'reset' })
+  }
+  document.getElementById('btnCloseResult').onclick = () => hideResult()
+  document.getElementById('resultOverlay').addEventListener('click', event => {
+    if (event.target.id === 'resultOverlay') hideResult()
+  })
+
+  // ---------- 启动 ----------
+
+  // 每 250ms 重绘一次：回合倒计时（座位头像上方）+ 本局用时（顶部）
+  setInterval(() => {
+    tickCountdown()
+    tickGameTime()
+  }, 250)
+
+  if (inIframe) {
+    // 模板A：先告诉外壳已就绪，再主动要令牌
+    window.parent.postMessage({ type: 'READY' }, '*')
+    setTimeout(requestTokenFromShell, 300)
+  } else {
+    // 模板B：用 URL fragment 中的票据兑换
+    exchangeTicket()
+  }
+})()
+</script>
+</body>
+</html>

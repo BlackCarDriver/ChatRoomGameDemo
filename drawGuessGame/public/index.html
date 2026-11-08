@@ -1,0 +1,1514 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>你画我猜 · 插件房接入 Demo</title>
+<style>
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; padding: 0; overflow: hidden;
+    font-family: -apple-system, "PingFang SC", "Microsoft YaHei", sans-serif;
+    background: rgba(27, 29, 36, .78); color: #eaeaea;
+  }
+  /* 固定 1024x768（4:3）设计画布：JS 按视口等比缩放 */
+  .page {
+    position: fixed; left: 50%; top: 50%;
+    width: 1280px; height: 800px;
+    padding: 14px 16px;
+    transform-origin: center;
+    display: flex; flex-direction: column; gap: 10px;
+  }
+  /* 顶部状态栏 */
+  .topbar {
+    display: grid; grid-template-columns: 1fr auto 1fr;
+    align-items: center; gap: 8px; min-height: 30px;
+  }
+  .topbarSide { display: flex; align-items: center; gap: 8px; min-width: 0; }
+  .topbarLeft { overflow: hidden; white-space: nowrap; }
+  .topbarRight { justify-content: flex-end; overflow: hidden; }
+  .topbarCenter { justify-self: center; }
+  .phaseTag {
+    font-size: 13px; font-weight: 700; padding: 3px 12px; border-radius: 999px;
+    background: rgba(255, 255, 255, .12); border: 1px solid rgba(255, 255, 255, .18);
+    white-space: nowrap;
+  }
+  .phaseTag.playing { color: #ffd479; }
+  .phaseTag.selecting { color: #9fd0ff; }
+  .phaseTag.roundEnd { color: #9bf6c3; }
+  .clock {
+    font-size: 13px; font-weight: 700; font-variant-numeric: tabular-nums;
+    padding: 3px 10px; border-radius: 999px; background: rgba(255, 255, 255, .12);
+    white-space: nowrap;
+  }
+  .clock.isUrgent { color: #ff4d4f; animation: pulse 1s ease-in-out infinite; }
+  @keyframes pulse { 0%, 100% { opacity: 1; } 50% { opacity: .55; } }
+  .connState { font-size: 12px; color: #8b90a0; white-space: nowrap; }
+
+  .layout { display: flex; gap: 14px; flex: 1 1 auto; min-height: 0; }
+
+  /* 画布区 */
+  .stage {
+    position: relative; flex: 1 1 auto; min-width: 0;
+    background: #1d1f27; border-radius: 10px;
+    display: flex; flex-direction: column; overflow: hidden;
+    border: 1px solid rgba(255, 255, 255, .08);
+  }
+  .canvasWrap {
+    position: relative; flex: 1 1 auto; min-height: 0;
+    /* 画布固定 4:3 居中，最大化利用空间 */
+    display: flex; align-items: center; justify-content: center;
+  }
+  canvas#board {
+    /* 尺寸由 resizeCanvas 按 4:3 精确设置（style.width/height） */
+    background: #fff; cursor: crosshair; touch-action: none;
+  }
+  canvas#board.locked { cursor: default; }
+  /* 绘画阶段悬浮提示 */
+  .stageBanner {
+    position: absolute; left: 50%; top: 12px; transform: translateX(-50%);
+    z-index: 10; max-width: 90%;
+    background: rgba(20, 22, 30, .88); border: 1px solid rgba(255, 255, 255, .14);
+    padding: 6px 14px; border-radius: 999px;
+    font-size: 13px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+    pointer-events: none; text-align: center;
+  }
+  .stageBanner.drawerWord { color: #ffd479; font-weight: 700; }
+  .stageBanner.spectatorHint { color: #b9bdc7; }
+
+  /* 工具栏 */
+  .toolbar {
+    flex: 0 0 auto; display: flex; align-items: center; gap: 6px;
+    padding: 6px 8px; background: #262933; border-top: 1px solid rgba(255,255,255,.08);
+    overflow-x: auto; white-space: nowrap;
+  }
+  .toolbar[hidden] { display: none; }
+  .toolBtn {
+    flex: 0 0 auto;
+    min-width: 38px; height: 30px; padding: 0 8px;
+    border: 1px solid rgba(255, 255, 255, .12); border-radius: 6px;
+    background: #2f333f; color: #d6d9e0; font-size: 12px; cursor: pointer;
+    display: inline-flex; align-items: center; justify-content: center; gap: 4px;
+    transition: background .15s ease, color .15s ease, border-color .15s ease;
+  }
+  .toolBtn:hover { background: #3a3e4a; }
+  .toolBtn.isActive { background: #3d6fd6; border-color: #3d6fd6; color: #fff; }
+  .toolBtn:disabled { opacity: .4; cursor: not-allowed; }
+  .sep { flex: 0 0 auto; width: 1px; height: 22px; background: rgba(255, 255, 255, .14); }
+  .colorSwatches { display: inline-flex; gap: 4px; align-items: center; }
+  .swatch {
+    width: 20px; height: 20px; border-radius: 50%; cursor: pointer;
+    border: 2px solid transparent; transition: transform .1s ease, border-color .1s ease;
+  }
+  .swatch:hover { transform: scale(1.15); }
+  .swatch.isActive { border-color: #fff; transform: scale(1.15); }
+  .swatchCustom {
+    position: relative; width: 20px; height: 20px; border-radius: 50%;
+    background: conic-gradient(red, yellow, lime, cyan, blue, magenta, red);
+    border: 2px solid rgba(255,255,255,.5); cursor: pointer; overflow: hidden;
+  }
+  .swatchCustom input { position: absolute; inset: -8px; opacity: 0; cursor: pointer; width: 200%; height: 200%; }
+  .sizeLabel { font-size: 11px; color: #8b90a0; }
+  input[type=range] { width: 90px; accent-color: #3d6fd6; }
+
+  /* 侧栏 */
+  .side { flex: 0 0 280px; width: 280px; display: flex; flex-direction: column; gap: 8px; min-height: 0; }
+  .card { background: #262933; border-radius: 8px; padding: 10px 12px; font-size: 13px; }
+  .cardTitle { font-size: 12px; color: #8b90a0; margin-bottom: 8px; display: flex; justify-content: space-between; align-items: center; }
+  .cardTitle .scoreOfMe { color: #ffd479; font-weight: 700; }
+
+  /* 得分榜 */
+  .scoreList { display: flex; flex-direction: column; gap: 4px; max-height: 150px; overflow-y: auto; }
+  .scoreRow {
+    display: flex; align-items: center; gap: 8px;
+    padding: 4px 8px; border-radius: 6px; background: #2f333f;
+  }
+  .scoreRow.isMe { background: rgba(61, 111, 214, .28); }
+  .scoreRow.isDrawer { box-shadow: inset 0 0 0 1px rgba(255, 212, 121, .5); }
+  .scoreAvatar { flex: 0 0 auto; position: relative; width: 2.2em; height: 2.2em; }
+  .scoreAvatar .avatarImg { position: absolute; inset: 0; width: 100%; height: 100%; border-radius: 50%; object-fit: cover; background: #3b3f4c; border: 1px solid #fff; box-sizing: border-box; }
+  .scoreAvatar .avatarFallback { position: absolute; inset: 0; border-radius: 50%; display: flex; align-items: center; justify-content: center; background: #3b3f4c; border: 1px dashed #6d7383; color: #9aa0af; font-size: .8em; }
+  .scoreNick { flex: 1 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .scoreNick .roleTag { font-size: 10px; color: #ffd479; margin-left: 4px; }
+  .scoreVal { flex: 0 0 auto; font-weight: 700; font-variant-numeric: tabular-nums; }
+  .emptyHint { font-size: 12px; color: #6f7484; }
+
+  /* 游戏操作区 */
+  .gameActions { display: flex; gap: 6px; }
+  .gameActions button { flex: 1 1 0; min-width: 0; padding: 7px 0; font-size: 13px; }
+  /* 回合数设置 */
+  .roundsRow {
+    display: flex; align-items: center; gap: 8px;
+    margin-top: 8px; padding-top: 8px;
+    border-top: 1px solid rgba(255, 255, 255, .08);
+  }
+  .roundsRow[hidden] { display: none; }
+  .roundsLabel { font-size: 12px; color: #8b90a0; flex: 0 0 auto; }
+  .roundsOptions { display: flex; flex-wrap: wrap; gap: 4px; flex: 1 1 auto; }
+  .roundsOpt {
+    flex: 1 1 0; min-width: 0;
+    padding: 4px 2px; font-size: 11px; border-radius: 5px;
+    border: 1px solid rgba(255, 255, 255, .14);
+    background: #2f333f; color: #b9bdc7; cursor: pointer;
+    transition: background .15s, color .15s, border-color .15s;
+    white-space: nowrap;
+  }
+  .roundsOpt:hover { background: #3a3e4a; }
+  .roundsOpt.isActive { background: #3d6fd6; border-color: #3d6fd6; color: #fff; }
+  .roundsOpt:disabled { opacity: .4; cursor: not-allowed; }
+  button { padding: 6px 12px; border: 0; border-radius: 6px; cursor: pointer; background: #3d6fd6; color: #fff; font-size: 13px; }
+  button.ghost { background: #3a3e4a; }
+  button:disabled { opacity: .5; cursor: not-allowed; }
+
+  /* 选题面板 */
+  .topicPanel { position: absolute; inset: 0; z-index: 20; display: flex; align-items: center; justify-content: center; background: rgba(10, 11, 16, .78); }
+  .topicPanel[hidden] { display: none; }
+  .topicCard { width: min(88%, 480px); padding: 22px; border-radius: 16px; text-align: center; background: linear-gradient(180deg, #313748, #232734); border: 1px solid rgba(255,255,255,.09); box-shadow: 0 18px 48px rgba(0,0,0,.5); }
+  .topicTitle { font-size: 15px; color: #ffd479; font-weight: 700; margin-bottom: 4px; }
+  .topicSub { font-size: 12px; color: #b9bdc7; margin-bottom: 16px; }
+  .topicOptions { display: flex; flex-direction: column; gap: 8px; }
+  .topicOptions button { padding: 12px; font-size: 16px; background: #2f333f; border: 1px solid rgba(255,255,255,.12); transition: background .15s; }
+  .topicOptions button:hover { background: #3d6fd6; }
+  .topicCountdown { margin-top: 12px; font-size: 12px; color: #8b90a0; }
+
+  /* 回合结算 / 终局弹窗 */
+  .resultOverlay { position: absolute; inset: 0; z-index: 30; display: flex; align-items: center; justify-content: center; background: rgba(10, 11, 16, .62); }
+  .resultOverlay[hidden] { display: none; }
+  .resultCard { width: min(88vw, 400px); max-height: 88%; overflow-y: auto; padding: 20px; border-radius: 16px; text-align: center; background: linear-gradient(180deg, #313748, #232734); border: 1px solid rgba(255,255,255,.09); box-shadow: 0 18px 48px rgba(0,0,0,.55); }
+  .resultBadge { font-size: 11px; letter-spacing: .3em; color: #8b90a0; margin-bottom: 8px; text-indent: .3em; }
+  .resultHeadline { font-size: 22px; font-weight: 800; line-height: 1.3; }
+  .resultHeadline.isWin { color: #ffd479; text-shadow: 0 0 18px rgba(255,212,121,.45); }
+  .resultDetail { margin-top: 8px; font-size: 13px; color: #b9bdc7; line-height: 1.7; white-space: pre-line; text-align: left; }
+  .resultActions { display: flex; gap: 8px; justify-content: center; margin-top: 16px; }
+  .fx { position: absolute; inset: 0; pointer-events: none; }
+  .fx span { position: absolute; left: 50%; top: 40%; width: 6px; height: 10px; border-radius: 1px; opacity: 0; animation: fxFly 1000ms ease-out forwards; animation-delay: var(--delay, 0ms); }
+  @keyframes fxFly {
+    0% { transform: translate(-50%, -50%) rotate(0deg) scale(.5); opacity: 1; }
+    70% { opacity: 1; }
+    100% { transform: translate(calc(-50% + var(--dx)), calc(-50% + var(--dy))) rotate(var(--rot)) scale(1); opacity: 0; }
+  }
+
+  /* 聊天 */
+  .chatCard { flex: 1 1 auto; display: flex; flex-direction: column; min-height: 0; }
+  .chatLog { flex: 1 1 auto; overflow-y: auto; font-size: 12px; line-height: 1.6; }
+  .chatRow { display: flex; gap: 6px; align-items: baseline; padding: 2px 0; }
+  .chatTime { flex: 0 0 auto; color: #6f7484; font-variant-numeric: tabular-nums; }
+  .chatNick { flex: 0 0 auto; color: #9aa0af; }
+  .chatText { word-break: break-word; }
+  .chatRow.isGuess { background: rgba(255, 212, 121, .12); border-radius: 6px; }
+  .chatGuessMark { flex: 0 0 auto; color: #ffd479; font-size: 11px; }
+  .chatSystem { color: #9bf6c3; }
+  .chatHint { font-size: 11px; color: #6f7484; margin-top: 4px; }
+
+  /* 观战提示 / 等待 */
+  .waitStage { position: absolute; inset: 0; z-index: 5; display: flex; align-items: center; justify-content: center; background: #171922; }
+  .waitStage[hidden] { display: none; }
+  .waitBox { text-align: center; }
+  .waitTitle { font-size: 17px; font-weight: 700; color: #d6d9e0; margin-bottom: 6px; }
+  .waitSub { font-size: 13px; color: #8b90a0; }
+
+  /* 右下角全屏按钮 */
+  .fsBtn {
+    position: absolute; right: 16px; bottom: 16px; z-index: 90;
+    width: 40px; height: 40px; padding: 0; border-radius: 10px;
+    display: flex; align-items: center; justify-content: center;
+    background: rgba(38, 41, 51, .82); color: #eaeaea;
+    border: 1px solid rgba(255, 255, 255, .12);
+    box-shadow: 0 4px 14px rgba(0, 0, 0, .35);
+    cursor: pointer; transition: background .2s ease, transform .1s ease;
+  }
+  .fsBtn:hover { background: rgba(61, 111, 214, .92); }
+  .fsBtn:active { transform: scale(.92); }
+  .fsBtn svg { width: 20px; height: 20px; display: block; }
+  .fsBtn .iconExit { display: none; }
+  .fsBtn.isFullscreen .iconEnter { display: none; }
+  .fsBtn.isFullscreen .iconExit { display: block; }
+
+  .toast {
+    position: absolute; left: 50%; top: 60px; transform: translateX(-50%);
+    background: rgba(200, 60, 60, .95); color: #fff; padding: 8px 16px;
+    border-radius: 6px; font-size: 13px; opacity: 0; transition: opacity .2s;
+    pointer-events: none; z-index: 100;
+  }
+  .toast.show { opacity: 1; }
+
+  /* 移动端竖屏：改为纵向布局，画板保持一定高度 */
+  @media (max-width: 700px) {
+    .page { flex-direction: column; overflow-y: auto; }
+    .layout { flex-direction: column; }
+    .side { flex: 0 0 auto; width: 100%; }
+    .stage { min-height: 420px; }
+  }
+</style>
+</head>
+<body>
+  <div class="page" id="page">
+    <div class="topbar">
+      <div class="topbarSide topbarLeft">
+        <span class="phaseTag" id="phaseTag">等待连接…</span>
+        <span class="clock" id="clock" hidden></span>
+      </div>
+      <div class="topbarCenter">
+        <span class="phaseTag" id="wordTag"></span>
+      </div>
+      <div class="topbarSide topbarRight">
+        <span class="connState" id="connState"></span>
+      </div>
+    </div>
+
+    <div class="layout">
+      <div class="stage">
+        <div class="canvasWrap">
+          <canvas id="board"></canvas>
+          <div class="stageBanner" id="stageBanner" hidden></div>
+          <div class="waitStage" id="waitStage">
+            <div class="waitBox">
+              <div class="waitTitle" id="waitTitle">等待游戏开始</div>
+              <div class="waitSub" id="waitSub">至少需要 2 名玩家，点击「开始游戏」即可开局</div>
+            </div>
+          </div>
+          <div class="topicPanel" id="topicPanel" hidden>
+            <div class="topicCard">
+              <div class="topicTitle">你是本轮画手，请选择一个题目</div>
+              <div class="topicSub">选好后其他人开始猜词</div>
+              <div class="topicOptions" id="topicOptions"></div>
+              <div class="topicCountdown" id="topicCountdown"></div>
+            </div>
+          </div>
+          <div class="resultOverlay" id="resultOverlay" hidden>
+            <div class="resultCard" id="resultCard">
+              <div class="fx" id="resultFx" aria-hidden="true"></div>
+              <div class="resultBadge" id="resultBadge"></div>
+              <div class="resultHeadline" id="resultHeadline"></div>
+              <div class="resultDetail" id="resultDetail"></div>
+              <div class="resultActions" id="resultActions"></div>
+            </div>
+          </div>
+        </div>
+
+        <!-- 工具栏：仅画手在绘画阶段可见 -->
+        <div class="toolbar" id="toolbar" hidden>
+          <button type="button" class="toolBtn isActive" data-tool="pen" title="钢笔">✏️ 钢笔</button>
+          <button type="button" class="toolBtn" data-tool="marker" title="马克笔">🖊️ 马克</button>
+          <button type="button" class="toolBtn" data-tool="brush" title="喷枪">🎨 喷枪</button>
+          <button type="button" class="toolBtn" data-tool="eraser" title="橡皮">🧽 橡皮</button>
+          <span class="sep"></span>
+          <div class="colorSwatches" id="colorSwatches"></div>
+          <span class="sep"></span>
+          <label class="sizeLabel" for="sizeRange">粗细</label>
+          <input type="range" id="sizeRange" min="1" max="60" value="6">
+          <span class="sep"></span>
+          <button type="button" class="toolBtn" id="btnUndo" title="撤销">↩ 撤销</button>
+          <button type="button" class="toolBtn" id="btnClear" title="清空画布">🗑 清空</button>
+          <button type="button" class="toolBtn ghost" id="btnSkip" title="放弃本回合">⏭ 放弃</button>
+        </div>
+      </div>
+
+      <div class="side">
+        <div class="card">
+          <div class="cardTitle">
+            <span>游戏操作</span>
+            <span class="scoreOfMe" id="myScore"></span>
+          </div>
+          <div class="gameActions">
+            <button id="btnReady">准备</button>
+            <button id="btnStart">开始游戏</button>
+            <button id="btnRestart" class="ghost" hidden>再来一局</button>
+          </div>
+          <!-- 回合数设置：仅房主可在非游戏进行中设置 -->
+          <div class="roundsRow" id="roundsRow" hidden>
+            <span class="roundsLabel">回合数</span>
+            <div class="roundsOptions" id="roundsOptions"></div>
+          </div>
+        </div>
+
+        <div class="card">
+          <div class="cardTitle"><span>参与玩家 / 得分</span></div>
+          <div class="scoreList" id="scoreList"></div>
+          <div class="emptyHint" id="scoreEmpty">暂无玩家，等待加入…</div>
+        </div>
+
+        <div class="card chatCard">
+          <div class="cardTitle">
+            <span>游戏内聊天</span>
+            <span class="chatHint" id="chatHint">在聊天室输入答案即可猜词</span>
+          </div>
+          <div class="chatLog" id="chatLog"></div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <div class="toast" id="toast"></div>
+  <button type="button" class="fsBtn" id="fullscreenBtn" title="全屏" aria-label="全屏">
+    <svg class="iconEnter" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+      <path d="M4 9V4h5M20 9V4h-5M4 15v5h5M20 15v5h-5"/>
+    </svg>
+    <svg class="iconExit" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+      <path d="M9 4v5H4M15 4v5h5M9 20v-5H4M15 20v-5h5"/>
+    </svg>
+  </button>
+
+<script>
+(function () {
+  // ==================== 全局状态 ====================
+  const inIframe = window.parent !== window
+  let ws = null
+  let token = ''
+  let tokenExpireAt = 0
+  let myNick = ''
+  let myAvatar = ''
+  let myFrameId = 0
+  let myFrame = ''
+  let snapshot = null
+  let clockSkew = 0
+  let isFullscreen = false
+  let reconnectTimer = null
+  let lastPhase = null
+  let resultShown = false
+  // 是否收到过首个快照：新进房者首帧若是结束态，只标记已展示、不弹窗
+  let snapshotReceived = false
+  // 画布状态源：动作列表（服务端权威，客户端本地追加/广播追加）
+  let localCanvas = []
+  // 画布尺寸（CSS 像素），坐标换算与重放用
+  let cssW = 0
+  let cssH = 0
+
+  const $ = id => document.getElementById(id)
+  const board = $('board')
+  const ctx = board.getContext('2d')
+
+  // ==================== 提示与令牌 ====================
+  function toast (msg) {
+    const el = $('toast')
+    el.textContent = msg
+    el.classList.add('show')
+    clearTimeout(el._t)
+    el._t = setTimeout(() => el.classList.remove('show'), 2500)
+  }
+
+  function requestTokenFromShell () {
+    window.parent.postMessage({ type: 'REQUEST_TOKEN' }, '*')
+  }
+
+  async function exchangeTicket () {
+    const hash = (location.hash || '').replace(/^#/, '')
+    const params = new URLSearchParams(hash)
+    const ticket = params.get('ticket')
+    if (!ticket) {
+      toast('缺少票据，请从房间重新进入')
+      return
+    }
+    try { history.replaceState(null, '', location.pathname) } catch (e) {}
+    try {
+      const resp = await fetch('/exchange', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ ticket })
+      })
+      if (!resp.ok) {
+        toast('票据兑换失败')
+        return
+      }
+      const data = await resp.json()
+      onToken(data.token, 0, data.nick)
+    } catch (e) {
+      toast('票据兑换失败')
+    }
+  }
+
+  function onToken (value, expireAt, nick) {
+    const sameToken = value === token
+    token = value
+    tokenExpireAt = expireAt || 0
+    if (nick) myNick = nick
+    if (sameToken && ws && ws.readyState === WebSocket.OPEN) return
+    connect()
+  }
+
+  window.addEventListener('message', function (event) {
+    const data = event.data || {}
+    if (data.type === 'INIT' && data.config) {
+      // 外壳下发初始化配置：fileServerHost 用于加载提示音等资源
+      if (data.config.fileServerHost) setFileServerHost(data.config.fileServerHost)
+    }
+    if (data.type === 'TOKEN' && data.token) {
+      onToken(data.token, data.expireAt, '')
+    }
+    if (data.type === 'FULLSCREEN_CHANGE') {
+      setFullscreenState(!!data.value)
+    }
+  })
+
+  function tokenRemain () {
+    if (!tokenExpireAt) return Infinity
+    return tokenExpireAt - Math.floor(Date.now() / 1000)
+  }
+
+  function reconnect () {
+    if (reconnectTimer) return
+    const delay = tokenRemain() < 120 ? 3000 : 2000
+    reconnectTimer = setTimeout(() => {
+      reconnectTimer = null
+      if (tokenRemain() < 120) {
+        if (inIframe) requestTokenFromShell()
+        else toast('凭证已过期，请从房间重新进入')
+        return
+      }
+      connect()
+    }, delay)
+  }
+
+  // ==================== 连接 ====================
+  function closeSocket () {
+    if (!ws) return
+    try {
+      ws.onopen = null; ws.onmessage = null; ws.onclose = null; ws.onerror = null
+      ws.close()
+    } catch (e) {}
+    ws = null
+  }
+
+  function connect () {
+    if (!token) return
+    closeSocket()
+    setConn('连接中…')
+    const proto = location.protocol === 'https:' ? 'wss:' : 'ws:'
+    const sock = new WebSocket(proto + '//' + location.host + '/ws?token=' + encodeURIComponent(token))
+    ws = sock
+
+    sock.onopen = function () {
+      if (ws !== sock) return
+      setConn('已连接')
+    }
+    sock.onmessage = function (event) {
+      if (ws !== sock) return
+      let msg
+      try { msg = JSON.parse(event.data) } catch (e) { return }
+      if (msg.type === 'welcome') {
+        myNick = msg.nick || myNick
+        myAvatar = msg.avatar || ''
+        myFrameId = msg.frameId || 0
+        myFrame = msg.frame || ''
+        if (snapshot) render()
+      } else if (msg.type === 'state') {
+        snapshot = msg
+        syncClock(msg.serverNow)
+        // 画布快照以服务端为准：首帧/新回合直接重放；
+        // 后续若与本地一致则跳过（避免每次全量快照打断正在进行的绘制）
+        if (msg.canvas && !sameCanvas(msg.canvas, localCanvas)) {
+          localCanvas = msg.canvas.slice()
+          replayCanvas()
+        }
+        render()
+      } else if (msg.type === 'chat') {
+        addChat(msg)
+      } else if (msg.type === 'draw') {
+        // 笔迹实时到达。自己发送的广播（本地已 push 并绘制）跳过，避免重复入栈；
+        // 其他画手的笔迹入栈后全量重放（保证半透明叠色/喷枪叠加正确）
+        const act = msg.action
+        if (!(msg.nick === myNick)) {
+          localCanvas.push(act)
+          renderAll()
+        }
+      } else if (msg.type === 'clear_canvas') {
+        localCanvas = []
+        // 当前进行中的笔画保留（它不在 localCanvas，清空后继续画）
+        renderAll()
+      } else if (msg.type === 'undo_canvas') {
+        localCanvas.pop()
+        renderAll()
+      } else if (msg.type === 'shell_control') {
+        handleShellControl(msg)
+      } else if (msg.type === 'error') {
+        toast(msg.message || '操作失败')
+      }
+    }
+    sock.onclose = function (event) {
+      if (ws !== sock) return
+      ws = null
+      setConn('已断开 code=' + event.code)
+      if ([4001, 4002, 4003, 4005, 4006].includes(event.code)) return
+      reconnect()
+    }
+    sock.onerror = function () {
+      if (ws !== sock) return
+      setConn('连接异常')
+    }
+  }
+
+  function setConn (text) { $('connState').textContent = text }
+
+  function send (payload) {
+    if (!ws || ws.readyState !== WebSocket.OPEN) {
+      toast('未连接到游戏服务')
+      return
+    }
+    ws.send(JSON.stringify(payload))
+  }
+
+  function syncClock (serverNow) {
+    if (typeof serverNow === 'number' && serverNow > 0) {
+      clockSkew = serverNow - Date.now()
+    }
+  }
+
+  // 判断两个画布动作列表是否相同（服务端快照与本地一致时跳过重放）
+  function sameCanvas (a, b) {
+    if (a.length !== b.length) return false
+    for (let i = 0; i < a.length; i++) {
+      if (a[i].tool !== b[i].tool || a[i].color !== b[i].color || a[i].size !== b[i].size || a[i].points.length !== b[i].points.length) return false
+    }
+    return true
+  }
+
+  // ==================== 画布 ====================
+
+  // 画布像素尺寸（DPR 放大保持清晰）；容器变化时保留已有内容
+  function resizeCanvas () {
+    // 画布固定 4:3 居中：按容器布局尺寸（offset 不受页面 transform 缩放影响）取最大适配，
+    // 再换算像素分辨率（DPR）。CSS 尺寸与像素尺寸都在布局空间，缩放只作用于显示。
+    const wrap = board.parentElement
+    const wrapW = wrap.offsetWidth
+    const wrapH = wrap.offsetHeight
+    const dpr = window.devicePixelRatio || 1
+    let w = wrapW
+    let h = w * 3 / 4
+    if (h > wrapH) {
+      h = wrapH
+      w = h * 4 / 3
+    }
+    w = Math.max(1, Math.floor(w))
+    h = Math.max(1, Math.floor(h))
+    // CSS 显示尺寸（布局空间，保持 4:3）
+    board.style.width = w + 'px'
+    board.style.height = h + 'px'
+    // 像素分辨率（DPR 放大保持清晰）
+    const pw = Math.round(w * dpr)
+    const ph = Math.round(h * dpr)
+    if (board.width !== pw || board.height !== ph) {
+      const old = document.createElement('canvas')
+      old.width = board.width; old.height = board.height
+      if (board.width > 0) old.getContext('2d').drawImage(board, 0, 0)
+      board.width = pw
+      board.height = ph
+      ctx.setTransform(dpr, 0, 0, dpr, 0, 0)
+      if (board.width > 0 && old.width > 0) {
+        ctx.drawImage(old, 0, 0, old.width, old.height, 0, 0, w, h)
+      }
+    } else {
+      ctx.setTransform(dpr, 0, 0, dpr, 0, 0)
+    }
+    cssW = w
+    cssH = h
+  }
+
+  // 工具与颜色
+  let currentTool = 'pen'
+  let currentColor = '#1a1a1a'
+  let currentSize = 6
+  const COLORS = ['#1a1a1a', '#e53935', '#fb8c00', '#fdd835', '#43a047', '#1e88e5', '#8e24aa', '#795548', '#ffffff']
+
+  function buildSwatches () {
+    const box = $('colorSwatches')
+    box.innerHTML = ''
+    COLORS.forEach(color => {
+      const s = document.createElement('div')
+      s.className = 'swatch' + (color === currentColor ? ' isActive' : '')
+      s.style.background = color
+      if (color === '#ffffff') s.style.borderColor = 'rgba(255,255,255,.4)'
+      s.title = color
+      s.addEventListener('click', () => setColor(color))
+      box.appendChild(s)
+    })
+    const custom = document.createElement('div')
+    custom.className = 'swatchCustom'
+    const input = document.createElement('input')
+    input.type = 'color'
+    input.addEventListener('input', () => setColor(input.value))
+    custom.appendChild(input)
+    box.appendChild(custom)
+  }
+
+  function setColor (color) {
+    currentColor = color
+    document.querySelectorAll('.swatch').forEach(s => {
+      s.classList.toggle('isActive', s.style.background === color)
+    })
+  }
+
+  // 坐标归一化（0-1，跨分辨率一致）
+  function toNorm (clientX, clientY) {
+    const rect = board.getBoundingClientRect()
+    return {
+      x: (clientX - rect.left) / rect.width,
+      y: (clientY - rect.top) / rect.height,
+      p: 1
+    }
+  }
+
+  function getBrushWidth (tool, size) {
+    switch (tool) {
+      case 'marker': return size * 2.2
+      case 'brush': return size * 1.4
+      case 'eraser': return size * 3
+      default: return size
+    }
+  }
+
+  function getBrushAlpha (tool) {
+    switch (tool) {
+      case 'marker': return 0.38
+      case 'brush': return 0.5 // 喷枪点级 alpha 见 paintAirbrush
+      default: return 1
+    }
+  }
+
+  // 统一笔刷设置：开始一笔/一段前调用
+  function beginBrush (tool, color, size) {
+    ctx.save()
+    ctx.globalCompositeOperation = tool === 'eraser' ? 'destination-out' : 'source-over'
+    ctx.globalAlpha = getBrushAlpha(tool)
+    ctx.strokeStyle = color
+    ctx.fillStyle = color
+    ctx.lineCap = 'round'
+    ctx.lineJoin = 'round'
+    ctx.lineWidth = getBrushWidth(tool, size)
+  }
+
+  // 确定性伪随机（0~1）：保证喷枪撒点重放一致
+  function pseudoRandom (seed) {
+    const x = Math.sin(seed * 12.9898 + 78.233) * 43758.5453
+    return x - Math.floor(x)
+  }
+
+  // 喷枪：沿路径撒小半透明点，中心密、边缘疏，形成柔和喷雾
+  function paintAirbrush (act) {
+    const base = getBrushWidth('brush', act.size)
+    const R = Math.max(5, base * 1.0) // 喷雾半径（像素），与笔径相当略大
+    const dotR = Math.max(0.7, act.size * 0.14) // 单点半径
+    const alpha = 0.12 // 单点不透明度（叠加后中心深、边缘浅）
+    const dotsPerSample = 9
+    let idx = 0
+    for (const p of act.points) {
+      const cx = p.x * cssW
+      const cy = p.y * cssH
+      // 只过滤亚像素级重复点（指针事件密集时），保证移动中喷雾连续
+      if (idx > 0) {
+        const prev = act.points[idx - 1]
+        const dx = p.x - prev.x, dy = p.y - prev.y
+        const distPx = Math.hypot(dx * cssW, dy * cssH)
+        if (distPx < 1) { idx++; continue }
+      }
+      for (let k = 0; k < dotsPerSample; k++) {
+        const seed = idx * 131 + k * 17
+        const ang = pseudoRandom(seed) * Math.PI * 2
+        // sqrt 均匀分布：中心密、边缘疏
+        const rad = Math.sqrt(pseudoRandom(seed + 1)) * R
+        const ox = Math.cos(ang) * rad
+        const oy = Math.sin(ang) * rad
+        // 点越小离中心越远，模拟颗粒感
+        const r = dotR * (0.5 + 0.9 * (1 - rad / R))
+        ctx.save()
+        ctx.globalCompositeOperation = 'source-over'
+        ctx.globalAlpha = alpha
+        ctx.fillStyle = act.color
+        ctx.beginPath()
+        ctx.arc(cx + ox, cy + oy, r, 0, Math.PI * 2)
+        ctx.fill()
+        ctx.restore()
+      }
+      idx++
+    }
+  }
+
+  // 画一笔（整条重放：新进房者/撤销/快照重放）。
+  // 马克笔/钢笔/橡皮：整条路径一次性 stroke，避免逐段 stroke 在半透明下的竹节叠痕；
+  // 喷枪：沿路径确定性撒点形成喷雾。
+  function paintStroke (act) {
+    if (!act || !act.points || act.points.length === 0) return
+    if (act.tool === 'brush') {
+      paintAirbrush(act)
+      return
+    }
+    beginBrush(act.tool, act.color, act.size)
+    // 整条路径一次 stroke：内部均匀、交叉才叠深
+    ctx.beginPath()
+    for (let i = 1; i < act.points.length; i++) {
+      ctx.moveTo(act.points[i - 1].x * cssW, act.points[i - 1].y * cssH)
+      ctx.lineTo(act.points[i].x * cssW, act.points[i].y * cssH)
+    }
+    ctx.stroke()
+    if (act.points.length === 1) {
+      const p = act.points[0]
+      ctx.beginPath()
+      ctx.arc(p.x * cssW, p.y * cssH, ctx.lineWidth / 2, 0, Math.PI * 2)
+      ctx.fill()
+    }
+    ctx.restore()
+  }
+
+  // 清空并按 localCanvas 重放（撤销 / 快照变化 / 回合切换）
+  function replayCanvas () {
+    renderAll()
+  }
+
+  // 全量重放：已完成笔画 + 当前进行中的笔画（保持马克笔交叉叠色与喷枪叠加正确）
+  function renderAll () {
+    ctx.clearRect(0, 0, board.width, board.height)
+    localCanvas.forEach(act => paintStroke(act))
+    if (currentStroke && currentStroke.points.length) {
+      paintStroke(currentStroke)
+    }
+  }
+
+  // 是否轮到我作画
+  function isMyDrawerTurn () {
+    if (!snapshot || !myNick) return false
+    const g = snapshot.game
+    return Boolean(g && (g.phase === 'selecting' || g.phase === 'playing') && g.drawer === myNick)
+  }
+
+  // ==================== 绘画交互 ====================
+
+  let drawing = false
+  let currentStroke = null
+  // rAF 节流：避免每次 pointermove 都全量重放
+  let renderScheduled = false
+  function scheduleRender () {
+    if (renderScheduled) return
+    renderScheduled = true
+    requestAnimationFrame(() => {
+      renderScheduled = false
+      renderAll()
+    })
+  }
+
+  function onPointerDown (e) {
+    if (!isMyDrawerTurn() || !snapshot || snapshot.game.phase !== 'playing') return
+    e.preventDefault()
+    drawing = true
+    currentStroke = {
+      tool: currentTool,
+      color: currentColor,
+      size: currentSize,
+      points: [toNorm(e.clientX, e.clientY)]
+    }
+    scheduleRender()
+    board.setPointerCapture(e.pointerId)
+  }
+  function onPointerMove (e) {
+    if (!drawing || !currentStroke) return
+    currentStroke.points.push(toNorm(e.clientX, e.clientY))
+    // 长笔画分段提交，避免单帧过大（服务端上限 2000 点）
+    if (currentStroke.points.length >= 1500) flushStroke()
+    scheduleRender()
+  }
+  function onPointerUp (e) {
+    if (!drawing) return
+    drawing = false
+    flushStroke()
+  }
+
+  // 提交当前笔画：记录到 localCanvas 并发送给服务端。
+  // 画面已由 renderAll 实时呈现，这里只保存与同步。
+  function flushStroke () {
+    if (!currentStroke || currentStroke.points.length === 0) return
+    const act = currentStroke
+    currentStroke = null
+    localCanvas.push(act)
+    send({ type: 'draw', action: act })
+  }
+
+  board.addEventListener('pointerdown', onPointerDown)
+  board.addEventListener('pointermove', onPointerMove)
+  board.addEventListener('pointerup', onPointerUp)
+  board.addEventListener('pointercancel', onPointerUp)
+
+  document.querySelectorAll('.toolBtn[data-tool]').forEach(btn => {
+    btn.addEventListener('click', () => {
+      currentTool = btn.dataset.tool
+      document.querySelectorAll('.toolBtn[data-tool]').forEach(b => b.classList.toggle('isActive', b === btn))
+    })
+  })
+  $('sizeRange').addEventListener('input', () => { currentSize = parseInt($('sizeRange').value, 10) || 6 })
+
+  $('btnUndo').addEventListener('click', () => {
+    if (!isMyDrawerTurn()) return
+    send({ type: 'undo_canvas' })
+    localCanvas.pop()
+    renderAll()
+  })
+  $('btnClear').addEventListener('click', () => {
+    if (!isMyDrawerTurn()) return
+    send({ type: 'clear_canvas' })
+    localCanvas = []
+    renderAll()
+  })
+  $('btnSkip').addEventListener('click', () => {
+    if (!isMyDrawerTurn()) return
+    send({ type: 'skip' })
+  })
+
+  // ==================== 渲染 ====================
+
+  function render () {
+    if (!snapshot) return
+    const g = snapshot.game || {}
+    renderTopbar(g)
+    renderStage(g)
+    renderToolbar(g)
+    renderScore(g)
+    renderButtons(g)
+    renderTopic(g)
+    renderResult(g)
+    renderWait(g)
+  }
+
+  function formatClock (seconds) {
+    const s = Math.max(0, seconds)
+    const m = Math.floor(s / 60)
+    return m + ':' + String(s % 60).padStart(2, '0')
+  }
+
+  function renderTopbar (g) {
+    const phase = g.phase || 'waiting'
+    const tag = $('phaseTag')
+    const labels = {
+      waiting: '等待开始', selecting: '选题中', playing: '作画中', roundEnd: '回合结算', gameOver: '游戏结束'
+    }
+    tag.textContent = labels[phase] || phase
+    tag.className = 'phaseTag ' + phase
+
+    const wordTag = $('wordTag')
+    if (phase === 'playing') {
+      const hint = g.wordHint || ''
+      wordTag.hidden = false
+      if (g.drawer === myNick) {
+        wordTag.textContent = '你要画：' + (g.word || '') + '（' + hint + '）'
+        wordTag.className = 'phaseTag playing'
+      } else {
+        wordTag.textContent = (g.drawer || '?') + ' 正在画：' + (hint || '')
+        wordTag.className = 'phaseTag'
+      }
+    } else if (phase === 'selecting' && isMyDrawerTurn()) {
+      wordTag.hidden = false
+      wordTag.textContent = '请选择题目'
+      wordTag.className = 'phaseTag selecting'
+    } else {
+      // 游戏未开始/结算/结束：隐藏题目提示
+      wordTag.hidden = true
+      wordTag.textContent = ''
+    }
+  }
+
+  function renderStage (g) {
+    const banner = $('stageBanner')
+    if (g.phase === 'playing' && g.drawer === myNick) {
+      banner.hidden = false
+      banner.className = 'stageBanner drawerWord'
+      banner.textContent = '你是画手：' + (g.word || '') + '（' + (g.wordHint || '') + '）'
+    } else if (g.phase === 'playing') {
+      banner.hidden = false
+      banner.className = 'stageBanner spectatorHint'
+      banner.textContent = '请在聊天室输入你的答案'
+    } else if (g.phase === 'selecting' && isMyDrawerTurn()) {
+      banner.hidden = false
+      banner.className = 'stageBanner drawerWord'
+      banner.textContent = '请选择一个题目'
+    } else {
+      banner.hidden = true
+    }
+    board.classList.toggle('locked', !(isMyDrawerTurn() && g.phase === 'playing'))
+  }
+
+  function renderToolbar (g) {
+    $('toolbar').hidden = !(isMyDrawerTurn() && (g.phase === 'playing' || g.phase === 'selecting'))
+  }
+
+  // 用户区域：所有阶段都展示房间内用户（头像、昵称、状态/得分）
+  // 游戏中/结束后：按得分榜渲染玩家得分；等待阶段：按进房顺序渲染全部用户并显示准备状态
+  function renderScore (g) {
+    const list = $('scoreList')
+    const empty = $('scoreEmpty')
+    const users = snapshot.users || []
+    const scoreboard = (g && g.scoreboard) || []
+    const myScore = scoreboard.find(r => r.nick === myNick)
+    $('myScore').textContent = myNick ? (myNick + ' · ' + (myScore ? myScore.score : 0) + '分') : ''
+
+    list.innerHTML = ''
+    const phase = (g && g.phase) || ''
+    // 有得分榜（游戏中/已结束）时：玩家按得分渲染，不在本局中的用户以观战身份追加；
+    // 等待阶段：按进房顺序渲染全部用户（显示准备状态）
+    const rows = []
+    if (scoreboard.length > 0) {
+      scoreboard.forEach(r => rows.push({ nick: r.nick, score: r.score }))
+      users.filter(u => !scoreboard.find(r => r.nick === u.nick)).forEach(u => rows.push({ nick: u.nick, score: null, spectator: true }))
+    } else {
+      users.forEach(u => rows.push({ nick: u.nick, score: null }))
+    }
+
+    rows.forEach(row => {
+      const el = document.createElement('div')
+      el.className = 'scoreRow' + (row.nick === myNick ? ' isMe' : '') + (g && g.drawer === row.nick ? ' isDrawer' : '')
+      const av = document.createElement('div')
+      av.className = 'scoreAvatar'
+      const user = users.find(u => u.nick === row.nick)
+      if (user && user.avatar) {
+        const img = document.createElement('img')
+        img.className = 'avatarImg'
+        img.src = user.avatar
+        av.appendChild(img)
+      } else {
+        const fb = document.createElement('div')
+        fb.className = 'avatarFallback'
+        fb.textContent = (row.nick || '?').slice(0, 1)
+        av.appendChild(fb)
+      }
+      const nick = document.createElement('span')
+      nick.className = 'scoreNick'
+      nick.textContent = row.nick + (row.nick === myNick ? '（你）' : '')
+      // 房主标记
+      if (snapshot.host && row.nick === snapshot.host) {
+        const tag = document.createElement('span')
+        tag.className = 'roleTag'
+        tag.textContent = '👑房主'
+        nick.appendChild(tag)
+      }
+      if (g && g.drawer === row.nick) {
+        const tag = document.createElement('span')
+        tag.className = 'roleTag'
+        tag.textContent = '🎨画手'
+        nick.appendChild(tag)
+      } else if (row.spectator) {
+        const tag = document.createElement('span')
+        tag.className = 'roleTag'
+        tag.textContent = '观战'
+        nick.appendChild(tag)
+      }
+      const val = document.createElement('span')
+      val.className = 'scoreVal'
+      if (row.score !== null) {
+        val.textContent = row.score + '分'
+      } else {
+        // 等待阶段：显示准备状态；游戏中观战者：显示准备（下局）状态
+        const u = users.find(x => x.nick === row.nick)
+        const ready = u && u.ready
+        val.textContent = ready ? '已准备 ✓' : (row.spectator ? '观战中' : '未准备')
+        val.style.fontSize = '11px'
+        val.style.fontWeight = 'normal'
+        val.style.color = ready ? '#9bf6c3' : '#6f7484'
+      }
+      el.appendChild(av)
+      el.appendChild(nick)
+      el.appendChild(val)
+      list.appendChild(el)
+    })
+    empty.hidden = rows.length > 0
+  }
+
+  // 操作区：等待阶段「准备/取消准备 + 开始游戏（仅房主、已准备≥2）」；游戏中无操作；结束后「再来一局（仅房主）」
+  function renderButtons (g) {
+    const phase = (g && g.phase) || 'waiting'
+    const inGame = phase !== 'waiting' && phase !== 'gameOver'
+    const readyBtn = $('btnReady')
+    const startBtn = $('btnStart')
+    const restartBtn = $('btnRestart')
+    const users = snapshot.users || []
+    const myReady = users.find(u => u.nick === myNick)
+    const readyCount = users.filter(u => u.ready).length
+    const canStart = readyCount >= 2
+    // 房主 = 进房最早者（服务端权威下发 host）
+    const isHost = myNick === snapshot.host
+
+    // 回合数设置：仅房主、非游戏进行中可见
+    renderRounds(g, isHost)
+
+    if (inGame) {
+      // 游戏中：本局玩家无操作按钮（画手用画布工具栏）；观战者可准备下一局
+      const inGamePlayer = (g && g.phase && g.phase !== 'waiting' && g.phase !== 'gameOver' && g.scoreboard && g.scoreboard.find(r => r.nick === myNick))
+      if (inGamePlayer) {
+        readyBtn.hidden = true
+        startBtn.hidden = true
+        restartBtn.hidden = true
+      } else {
+        readyBtn.hidden = false
+        startBtn.hidden = true
+        restartBtn.hidden = true
+        const isReady = myReady && myReady.ready
+        readyBtn.textContent = isReady ? '已准备下局 ✓' : '准备（下局加入）'
+        readyBtn.classList.toggle('ghost', isReady)
+        readyBtn.disabled = false
+      }
+      return
+    }
+
+    if (phase === 'gameOver') {
+      readyBtn.hidden = false
+      startBtn.hidden = true
+      restartBtn.hidden = false
+      restartBtn.disabled = !canStart || !isHost
+    } else {
+      readyBtn.hidden = false
+      startBtn.hidden = false
+      restartBtn.hidden = true
+      startBtn.disabled = !canStart || !isHost
+      startBtn.textContent = isHost ? '开始游戏' : `等待房主开始`
+    }
+
+    // 准备按钮文案随我的准备状态切换
+    const isReady = myReady && myReady.ready
+    readyBtn.textContent = isReady ? '取消准备' : '准备'
+    readyBtn.classList.toggle('ghost', isReady)
+  }
+
+  // 回合数设置：仅房主、非游戏进行中可见；点选项即发送 set_rounds
+  const ROUND_CHOICES = [1, 2, 3, 5]
+  function renderRounds (g, isHost) {
+    const row = $('roundsRow')
+    const phase = (g && g.phase) || 'waiting'
+    const visible = isHost && (phase === 'waiting' || phase === 'gameOver')
+    row.hidden = !visible
+    if (!visible) return
+
+    const current = snapshot.timing ? snapshot.timing.totalRounds : 0
+    const box = $('roundsOptions')
+    // 选项不变时不重建（避免重复绑定）
+    if (box.dataset.current !== String(current)) {
+      box.dataset.current = String(current)
+      box.innerHTML = ''
+      ROUND_CHOICES.forEach(n => {
+        const b = document.createElement('button')
+        b.type = 'button'
+        b.className = 'roundsOpt' + (n === current ? ' isActive' : '')
+        b.textContent = String(n)
+        b.title = '共进行 ' + n + ' 回合'
+        b.addEventListener('click', () => {
+          if (n === current) return
+          send({ type: 'set_rounds', rounds: n })
+        })
+        box.appendChild(b)
+      })
+    } else {
+      // 仅刷新高亮
+      box.querySelectorAll('.roundsOpt').forEach(b => {
+        b.classList.toggle('isActive', Number(b.textContent) === current)
+      })
+    }
+  }
+
+  function renderTopic (g) {
+    const panel = $('topicPanel')
+    if (g.phase === 'selecting' && isMyDrawerTurn()) {
+      panel.hidden = false
+      const box = $('topicOptions')
+      box.innerHTML = ''
+      ;(g.options || []).forEach(word => {
+        const b = document.createElement('button')
+        b.textContent = word
+        b.addEventListener('click', () => {
+          send({ type: 'select', word })
+          panel.hidden = true
+        })
+        box.appendChild(b)
+      })
+    } else {
+      panel.hidden = true
+    }
+  }
+
+  function renderWait (g) {
+    const wait = $('waitStage')
+    const phase = (g && g.phase) || 'waiting'
+    if (phase === 'waiting' || !g) {
+      wait.hidden = false
+      const users = snapshot.users || []
+      const readyCount = users.filter(u => u.ready).length
+      const isHost = myNick === snapshot.host
+      if (readyCount < 2) {
+        $('waitSub').textContent = '已准备 ' + readyCount + ' 人，至少 2 人准备后即可开始（请点击「准备」）'
+      } else if (isHost) {
+        $('waitSub').textContent = '已准备 ' + readyCount + ' 人，点击「开始游戏」即可开局'
+      } else {
+        $('waitSub').textContent = '已准备 ' + readyCount + ' 人，等待房主「' + (snapshot.host || '') + '」开始游戏'
+      }
+    } else {
+      wait.hidden = true
+    }
+  }
+
+  // 选题倒计时
+  function tickTopicCountdown () {
+    const panel = $('topicPanel')
+    if (panel.hidden || !snapshot) return
+    const g = snapshot.game || {}
+    if (g.phase !== 'selecting' || !g.selectDeadline) return
+    const remain = Math.max(0, Math.ceil((g.selectDeadline - (Date.now() + clockSkew)) / 1000))
+    $('topicCountdown').textContent = remain > 0 ? remain + ' 秒后自动选择' : '即将自动选择…'
+  }
+
+  // 主倒计时（绘画/结算）
+  function tickClock () {
+    const el = $('clock')
+    const g = snapshot && snapshot.game
+    if (!g || (g.phase !== 'playing' && g.phase !== 'selecting' && g.phase !== 'roundEnd')) {
+      el.hidden = true
+      el.textContent = ''
+      return
+    }
+    let deadline = 0
+    let label = ''
+    if (g.phase === 'playing' && g.roundDeadline) {
+      deadline = g.roundDeadline
+      label = '剩余'
+    } else if (g.phase === 'selecting' && g.selectDeadline) {
+      deadline = g.selectDeadline
+      label = '选题'
+    } else if (g.phase === 'roundEnd' && g.resultDeadline) {
+      deadline = g.resultDeadline
+      label = '结算'
+    } else {
+      el.hidden = true
+      return
+    }
+    const remain = Math.ceil((deadline - (Date.now() + clockSkew)) / 1000)
+    el.hidden = false
+    el.textContent = label + ' ' + formatClock(remain)
+    el.classList.toggle('isUrgent', remain <= 10)
+  }
+
+  // ==================== 回合结算 / 终局 ====================
+
+  const FX_COLORS = ['#ffd479', '#ff7a7a', '#7ad3ff', '#9bf6c3', '#c9a7ff']
+
+  function showResult (g) {
+    const overlay = $('resultOverlay')
+    const badge = $('resultBadge')
+    const headline = $('resultHeadline')
+    const detail = $('resultDetail')
+    const fx = $('resultFx')
+    const actions = $('resultActions')
+    actions.innerHTML = ''
+
+    const isFinal = g.phase === 'gameOver'
+    badge.textContent = isFinal ? '游戏结束' : '回合结束'
+
+    let headText = ''
+    let cls = ''
+    if (isFinal) {
+      if (g.winner === myNick) {
+        headText = '🏆 你是冠军！'
+        cls = 'isWin'
+      } else if (g.winner) {
+        headText = g.winner + ' 获得冠军'
+      } else {
+        headText = '游戏结束'
+      }
+    } else {
+      const r = g.result || {}
+      if (r.drawer === myNick) headText = '你画的是：' + (r.word || '')
+      else headText = '正确答案：' + (r.word || '')
+    }
+    headline.textContent = headText
+    headline.className = 'resultHeadline ' + cls
+
+    const lines = []
+    if (isFinal) {
+      lines.push('最终排名')
+      ;(g.ranking || []).forEach((row, i) => {
+        const medal = ['🥇', '🥈', '🥉'][i] || (i + 1) + '.'
+        lines.push(medal + ' ' + row.nick + ' · ' + row.score + '分')
+      })
+      const again = document.createElement('button')
+      again.textContent = '再来一局'
+      again.onclick = () => { hideResult(); send({ type: 'restart' }) }
+      const close = document.createElement('button')
+      close.className = 'ghost'
+      close.textContent = '关闭'
+      close.onclick = () => hideResult()
+      actions.appendChild(again)
+      actions.appendChild(close)
+    } else {
+      const r = g.result || {}
+      if (r.drawer && r.drawer === myNick) {
+        lines.push('你是画手，本轮答对 ' + (r.correct || []).length + ' 人')
+      } else {
+        const me = (r.correct || []).find(n => n === myNick)
+        if (me) lines.push('你答对了！🎉')
+        else lines.push('本轮未答对')
+      }
+      if ((r.correct || []).length > 0) {
+        lines.push('答对者：' + r.correct.join('、'))
+      }
+    }
+    detail.textContent = lines.join('\n')
+
+    fx.innerHTML = ''
+    for (let i = 0; i < 24; i++) {
+      const piece = document.createElement('span')
+      const angle = Math.random() * Math.PI * 2
+      const radius = 70 + Math.random() * 90
+      piece.style.background = FX_COLORS[i % FX_COLORS.length]
+      piece.style.setProperty('--dx', Math.cos(angle) * radius + 'px')
+      piece.style.setProperty('--dy', Math.sin(angle) * radius + 'px')
+      piece.style.setProperty('--rot', Math.round(Math.random() * 720 - 360) + 'deg')
+      piece.style.setProperty('--delay', Math.round(Math.random() * 180) + 'ms')
+      fx.appendChild(piece)
+    }
+
+    overlay.hidden = false
+    resultShown = true
+  }
+
+  function hideResult () {
+    $('resultOverlay').hidden = true
+  }
+
+  function renderResult (g) {
+    const phase = g.phase || 'waiting'
+    const isEnd = phase === 'roundEnd' || phase === 'gameOver'
+
+    // 新进房者首帧：若直接处于结束态，只记录已展示、不弹窗（没经历游戏过程）
+    if (lastPhase === null && isEnd) {
+      resultShown = true
+      lastPhase = phase
+      return
+    }
+
+    if (isEnd) {
+      // 从进行中/选题 → 回合结束：弹一次结算弹窗
+      if (phase === 'roundEnd' && (lastPhase === 'playing' || lastPhase === 'selecting') && !resultShown) {
+        resultShown = true
+        showResult(g)
+      }
+      // 从回合结束 → 游戏结束：弹终局排名（覆盖结算弹窗）
+      else if (phase === 'gameOver' && lastPhase === 'roundEnd') {
+        resultShown = true
+        showResult(g)
+      }
+      // 从进行中直接进入游戏结束（兜底，如画手全部离房等）
+      else if (phase === 'gameOver' && (lastPhase === 'playing' || lastPhase === 'selecting') && !resultShown) {
+        resultShown = true
+        showResult(g)
+      }
+      // 其余情况（已展示过、或一直处于结束态）：保持现状不弹
+    } else {
+      // 回到非结束态：重置弹窗状态
+      if (phase === 'playing' || phase === 'selecting') resultShown = false
+      hideResult()
+    }
+    lastPhase = phase
+  }
+
+  // ==================== 聊天 ====================
+
+  // ---------- 消息提示音（与聊天室音乐房同源 bibi.mp3） ----------
+
+  // 默认铃声地址：优先外壳下发的 fileServerHost，其次头像反推，兜底固定源
+  const RING_NAME = 'bibi.mp3'
+  const FALLBACK_RING_HOST = 'https://nichijou.cn/source'
+  let fileServerHost = ''
+  let ringAudio = null
+  let audioUnlocked = false
+
+  function setFileServerHost (host) {
+    if (!host) return
+    fileServerHost = String(host).replace(/\/+$/, '')
+  }
+
+  // 头像地址形如 <文件服务器>/avatar/<id>.jpg，可反推文件服务器地址
+  function hostFromAvatar (url) {
+    if (!url) return ''
+    const idx = String(url).indexOf('/avatar/')
+    return idx > 0 ? String(url).slice(0, idx) : ''
+  }
+
+  function ringSrc () {
+    let base = fileServerHost || hostFromAvatar(myAvatar)
+    if (!base && snapshot && Array.isArray(snapshot.users)) {
+      const withAvatar = snapshot.users.find(u => hostFromAvatar(u.avatar))
+      if (withAvatar) base = hostFromAvatar(withAvatar.avatar)
+    }
+    return (base || FALLBACK_RING_HOST) + '/music/' + RING_NAME
+  }
+
+  function playRing () {
+    const src = ringSrc()
+    if (!src) return
+    if (!ringAudio) {
+      ringAudio = new Audio()
+      ringAudio.preload = 'auto'
+    }
+    if (ringAudio.src !== src) ringAudio.src = src
+    try { ringAudio.currentTime = 0 } catch (e) {}
+    const task = ringAudio.play()
+    if (task && task.catch) task.catch(() => {})
+  }
+
+  // 浏览器要求先有用户交互才允许播放音频：首次交互时静默解锁
+  function unlockRing () {
+    if (audioUnlocked) return
+    const src = ringSrc()
+    if (!src) return
+    if (!ringAudio) {
+      ringAudio = new Audio()
+      ringAudio.preload = 'auto'
+    }
+    ringAudio.muted = true
+    ringAudio.src = src
+    const task = ringAudio.play()
+    const done = () => {
+      ringAudio.pause()
+      ringAudio.currentTime = 0
+      ringAudio.muted = false
+      audioUnlocked = true
+    }
+    if (task && task.then) {
+      task.then(done).catch(() => { ringAudio.muted = false })
+    } else {
+      done()
+    }
+  }
+
+  window.addEventListener('pointerdown', unlockRing)
+  window.addEventListener('keydown', unlockRing)
+
+  function formatChatTime (timestamp) {
+    const date = timestamp > 0 ? new Date(timestamp * 1000) : new Date()
+    return String(date.getHours()).padStart(2, '0') + ':' + String(date.getMinutes()).padStart(2, '0')
+  }
+
+  function addChat (msg) {
+    const log = $('chatLog')
+    const row = document.createElement('div')
+    row.className = 'chatRow'
+    if (msg.guessed) row.classList.add('isGuess')
+
+    const timeEl = document.createElement('span')
+    timeEl.className = 'chatTime'
+    timeEl.textContent = formatChatTime(msg.timestamp)
+    row.appendChild(timeEl)
+
+    if (msg.guessed) {
+      const mark = document.createElement('span')
+      mark.className = 'chatGuessMark'
+      mark.textContent = '✅'
+      row.appendChild(mark)
+    }
+
+    const nickEl = document.createElement('span')
+    nickEl.className = 'chatNick'
+    nickEl.textContent = (msg.nick || '') + ':'
+    row.appendChild(nickEl)
+
+    const textEl = document.createElement('span')
+    textEl.className = 'chatText'
+    textEl.textContent = msg.text
+    row.appendChild(textEl)
+
+    log.appendChild(row)
+    log.scrollTop = log.scrollHeight
+
+    // 消息到达即响铃（与音乐房一致，自己发的也会响）
+    playRing()
+
+    if (msg.guessed) {
+      toast('🎉 ' + msg.nick + ' 答对了！')
+    }
+  }
+
+  // ==================== 全屏 ====================
+
+  function handleShellControl (msg) {
+    if (msg.action === 'fullscreen') applyFullscreen(!!msg.value)
+  }
+
+  function applyFullscreen (on) {
+    if (inIframe) {
+      window.parent.postMessage({ type: 'FULLSCREEN_REQUEST', value: on }, '*')
+      return
+    }
+    if (on) {
+      const el = document.documentElement
+      const req = el.requestFullscreen || el.webkitRequestFullscreen
+      if (req) {
+        const task = req.call(el)
+        if (task && task.catch) task.catch(() => {})
+      }
+    } else if (document.fullscreenElement) {
+      (document.exitFullscreen || document.webkitExitFullscreen || function () {}).call(document)
+    }
+  }
+
+  function setFullscreenState (on) {
+    isFullscreen = on
+    const btn = $('fullscreenBtn')
+    btn.classList.toggle('isFullscreen', on)
+    btn.title = on ? '退出全屏' : '全屏'
+  }
+
+  $('fullscreenBtn').addEventListener('click', () => {
+    const next = !isFullscreen
+    if (ws && ws.readyState === WebSocket.OPEN) {
+      send({ type: 'fullscreen', value: next })
+    } else {
+      applyFullscreen(next)
+    }
+  })
+  if (!inIframe) {
+    document.addEventListener('fullscreenchange', () => {
+      setFullscreenState(Boolean(document.fullscreenElement))
+    })
+  }
+
+  // ==================== 等比缩放 ====================
+
+  const PAGE_W = 1280
+  const PAGE_H = 800
+  const pageEl = $('page')
+
+  function fitPage () {
+    if (!pageEl) return
+    const scale = Math.min(innerWidth / PAGE_W, innerHeight / PAGE_H)
+    pageEl.style.transform = 'translate(-50%, -50%) scale(' + scale + ')'
+  }
+  window.addEventListener('resize', () => { fitPage(); resizeCanvas() })
+  fitPage()
+
+  new ResizeObserver(() => resizeCanvas()).observe(board.parentElement)
+  window.addEventListener('orientationchange', () => setTimeout(resizeCanvas, 200))
+
+  // ==================== 启动 ====================
+
+  // 调试钩子：暴露画布状态（仅本地排查用）
+  window.__dgDebug = () => ({
+    canvasCount: localCanvas.length,
+    tools: localCanvas.map(a => a.tool),
+    css: [cssW, cssH],
+    myNick
+  })
+
+  buildSwatches()
+  resizeCanvas()
+  $('btnStart').addEventListener('click', () => send({ type: 'start' }))
+  $('btnReady').addEventListener('click', () => {
+    // 依据当前我的准备状态切换
+    const u = snapshot && snapshot.users ? snapshot.users.find(x => x.nick === myNick) : null
+    send({ type: u && u.ready ? 'cancel_ready' : 'ready' })
+  })
+
+  setInterval(() => {
+    tickClock()
+    tickTopicCountdown()
+  }, 250)
+
+  if (inIframe) {
+    window.parent.postMessage({ type: 'READY' }, '*')
+    setTimeout(requestTokenFromShell, 300)
+  } else {
+    exchangeTicket()
+  }
+})()
+</script>
+</body>
+</html>
