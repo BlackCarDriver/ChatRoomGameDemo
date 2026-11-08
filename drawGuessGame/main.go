@@ -91,6 +91,12 @@ type Hub struct {
 	enterSeq int
 	started  bool // 是否有过游戏（用于首次进房即开始的判断）
 
+	// 按昵称持久化的参与状态（断线重连继承，离开房间时清除）：
+	// enterSeqByNick 保证房主身份（进房最早者）在重连后不变；
+	// readyByNick 保证准备状态在重连后不丢失。
+	enterSeqByNick map[string]int
+	readyByNick    map[string]bool
+
 	// 定时器
 	selectTimer *time.Timer
 	roundTimer  *time.Timer
@@ -114,13 +120,15 @@ var gameHub = NewHub(nil)
 // NewHub 创建 hub
 func NewHub(bridge *nichijouSDK.Bridge) *Hub {
 	return &Hub{
-		clients:       map[string]*client{},
-		roundSeconds:  60,
-		selectSeconds: 10,
-		resultSeconds: 8,
-		totalRounds:   0,
-		maxPlayers:    12,
-		bridge:        bridge,
+		clients:        map[string]*client{},
+		enterSeqByNick: map[string]int{},
+		readyByNick:    map[string]bool{},
+		roundSeconds:   60,
+		selectSeconds:  10,
+		resultSeconds:  8,
+		totalRounds:    0,
+		maxPlayers:     12,
+		bridge:         bridge,
 	}
 }
 
@@ -416,6 +424,9 @@ func (h *Hub) OnUserLeaveRoom(nick string) {
 		_ = c.conn.Close()
 		delete(h.clients, nick)
 	}
+	// 真正离开房间：清除按昵称持久化的参与状态（断线重连则保留，由 readPump 处理）
+	delete(h.enterSeqByNick, nick)
+	delete(h.readyByNick, nick)
 	h.lock.Unlock()
 
 	h.addEvent(fmt.Sprintf("【%s】离开了房间", nick))
@@ -559,6 +570,7 @@ func (h *Hub) SetReady(nick string, ready bool) error {
 		return nil
 	}
 	c.ready = ready
+	h.readyByNick[nick] = ready
 	h.lock.Unlock()
 
 	if ready {
@@ -637,6 +649,9 @@ func (h *Hub) finishRound(cause string) {
 	}
 	g := h.game
 	word := g.Word
+	// 日志：回合因何结束、剩余时间（排查偶现的“回合提前结束”）
+	remain := (g.RoundDeadline - time.Now().UnixMilli()) / 1000
+	log.Printf("[round] 回合结束 cause=%q round=%d 剩余=%ds deadline=%d now=%d", cause, g.Round, remain, g.RoundDeadline, time.Now().UnixMilli())
 	g.EndRound(cause)
 	h.armTimerLocked()
 	h.lock.Unlock()
@@ -849,6 +864,8 @@ func (h *Hub) onRoundTimeout(seq int64) {
 		h.lock.Unlock()
 		return
 	}
+	// 日志：回合为何在此刻结束（排查偶现的“回合提前结束”）
+	log.Printf("[timer] 回合超时触发 seq=%d now=%d roundSeconds=%d", seq, time.Now().UnixMilli(), h.roundSeconds)
 	h.lock.Unlock()
 	h.finishRound("时间到")
 }
@@ -960,10 +977,15 @@ func (s *Handler) ServeWS(w http.ResponseWriter, r *http.Request) {
 		close(old.send)
 		_ = old.conn.Close()
 	}
-	gameHub.enterSeq++
-	c.enterSeq = gameHub.enterSeq
-	// 进房默认未准备：用户点「准备」后才参与下一局（游戏中进房者先观战）
-	c.ready = false
+	// 进房序号与准备状态按昵称持久化：断线/刷新重连后房主身份与准备状态保持不变
+	if seq, ok := gameHub.enterSeqByNick[claims.Sub]; ok {
+		c.enterSeq = seq
+	} else {
+		gameHub.enterSeq++
+		c.enterSeq = gameHub.enterSeq
+		gameHub.enterSeqByNick[claims.Sub] = c.enterSeq
+	}
+	c.ready = gameHub.readyByNick[claims.Sub]
 	gameHub.clients[claims.Sub] = c
 	gameHub.lock.Unlock()
 

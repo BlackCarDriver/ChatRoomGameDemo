@@ -1258,14 +1258,10 @@
         const medal = ['🥇', '🥈', '🥉'][i] || (i + 1) + '.'
         lines.push(medal + ' ' + row.nick + ' · ' + row.score + '分')
       })
-      const again = document.createElement('button')
-      again.textContent = '再来一局'
-      again.onclick = () => { hideResult(); send({ type: 'restart' }) }
       const close = document.createElement('button')
       close.className = 'ghost'
       close.textContent = '关闭'
       close.onclick = () => hideResult()
-      actions.appendChild(again)
       actions.appendChild(close)
     } else {
       const r = g.result || {}

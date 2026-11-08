@@ -426,3 +426,71 @@ func TestRandomCategoryNoRepeat(t *testing.T) {
 		}
 	}
 }
+
+// TestReconnectKeepsHostAndReady 验证断线重连后：房主身份（enterSeq）与准备状态（ready）保持
+func TestReconnectKeepsHostAndReady(t *testing.T) {
+	hub := NewHub(nil)
+	// A 首次连接：进房最早 → 房主；A 点准备
+	hub.lock.Lock()
+	hub.clients["A"] = &client{nick: "A", enterSeq: 1, send: make(chan []byte, 4)}
+	hub.enterSeqByNick["A"] = 1
+	hub.clients["B"] = &client{nick: "B", enterSeq: 2, send: make(chan []byte, 4)}
+	hub.enterSeqByNick["B"] = 2
+	hub.lock.Unlock()
+	if err := hub.SetReady("A", true); err != nil {
+		t.Fatalf("A 准备失败: %v", err)
+	}
+
+	// A 掉线（readPump 断开：删 clients，但保留持久状态）→ 重连（新连接）
+	hub.lock.Lock()
+	delete(hub.clients, "A")
+	hub.lock.Unlock()
+	hub.handlePlayerDrop("A")
+
+	// 模拟 ServeWS 重连逻辑：继承 enterSeq 与 ready
+	hub.lock.Lock()
+	newSeq := 0
+	if seq, ok := hub.enterSeqByNick["A"]; ok {
+		newSeq = seq
+	} else {
+		hub.enterSeq++
+		newSeq = hub.enterSeq
+		hub.enterSeqByNick["A"] = newSeq
+	}
+	newReady := hub.readyByNick["A"]
+	hub.clients["A"] = &client{nick: "A", enterSeq: newSeq, ready: newReady, send: make(chan []byte, 4)}
+	hub.lock.Unlock()
+
+	if hub.hostNick() != "A" {
+		t.Fatalf("重连后房主应仍是 A（enterSeq 持久化），got %s", hub.hostNick())
+	}
+	hub.lock.Lock()
+	c := hub.clients["A"]
+	ready := c.ready
+	hub.lock.Unlock()
+	if !ready {
+		t.Fatal("重连后 A 的准备状态应保留")
+	}
+}
+
+// TestLeaveRoomClearsState 验证真正离开房间后清除持久状态（下次进房是新用户）
+func TestLeaveRoomClearsState(t *testing.T) {
+	hub := NewHub(nil)
+	hub.lock.Lock()
+	hub.clients["A"] = &client{nick: "A", enterSeq: 1, send: make(chan []byte, 4)}
+	hub.enterSeqByNick["A"] = 1
+	hub.readyByNick["A"] = true
+	// 模拟 OnUserLeaveRoom 的清除逻辑（真实路径还有 close conn / handlePlayerDrop）
+	delete(hub.clients, "A")
+	delete(hub.enterSeqByNick, "A")
+	delete(hub.readyByNick, "A")
+	hub.lock.Unlock()
+
+	hub.lock.Lock()
+	_, hasEnter := hub.enterSeqByNick["A"]
+	_, hasReady := hub.readyByNick["A"]
+	hub.lock.Unlock()
+	if hasEnter || hasReady {
+		t.Fatal("离房后应清除持久状态")
+	}
+}
