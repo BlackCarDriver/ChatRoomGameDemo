@@ -397,3 +397,32 @@ func TestSelectEventNoSpoiler(t *testing.T) {
 		t.Fatalf("选题事件应含字数提示: %s", last)
 	}
 }
+
+// TestRandomCategoryNoRepeat 验证分类随机且本局内不重复（直到用光）
+func TestRandomCategoryNoRepeat(t *testing.T) {
+	// 词库有 53+ 分类；把总回合数设大，验证前 10 回合分类不重复（随机+去重）
+	g := NewGame([]string{"A", "B"}, 0)
+	g.TotalRounds = 30 // 直接覆盖：总回合数大于玩家数也可用于测试
+	seen := map[string]bool{}
+	for i := 0; i < 10; i++ {
+		cat := g.WordCategory
+		if seen[cat] {
+			t.Fatalf("第 %d 回合分类重复: %s", i+1, cat)
+		}
+		seen[cat] = true
+		// 推进一回合（模拟结算+下一轮）
+		if err := g.SelectWord(g.Drawer, g.Options[0]); err != nil {
+			t.Fatalf("选题失败: %v", err)
+		}
+		g.EndRound("时间到")
+		g.AdvanceRound()
+	}
+	// 分类应来自词库
+	if len(library.Categories()) > 0 {
+		for cat := range seen {
+			if !containsStrSlice(library.Categories(), cat) {
+				t.Fatalf("分类 %q 不在词库中", cat)
+			}
+		}
+	}
+}

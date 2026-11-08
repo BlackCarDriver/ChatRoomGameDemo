@@ -59,8 +59,7 @@ type Game struct {
 	Round          int      // 当前回合（从 1）
 	TotalRounds    int      // 计划总回合（默认 = 参与人数）
 	UsedWords      []string // 本局已用过的词
-	UsedCategories []string // 本局已用过的分类（轮换分类）
-	CategoryIndex  int      // 当前分类下标
+	UsedCategories []string // 本局已用过的分类（随机选择时去重用）
 	DrawerIndex    int      // 画手轮换下标
 
 	SelectDeadline int64 // 选题截止（Unix 毫秒）
@@ -132,13 +131,22 @@ func (g *Game) beginRound() {
 	g.CanvasBase64 = ""
 	g.Result = nil
 
-	// 轮换分类（保证每回合题材不重）
+	// 随机选分类（优先本局未用过的，保证题材不重复；全部用光则允许复用）
 	categories := library.Categories()
 	if len(categories) == 0 {
 		categories = []string{""}
 	}
-	g.CategoryIndex = (g.CategoryIndex + 1) % len(categories)
-	g.WordCategory = categories[g.CategoryIndex]
+	var avail []string
+	for _, c := range categories {
+		if !containsStrSlice(g.UsedCategories, c) {
+			avail = append(avail, c)
+		}
+	}
+	if len(avail) == 0 {
+		avail = categories
+	}
+	g.WordCategory = avail[rand.Intn(len(avail))]
+	g.UsedCategories = append(g.UsedCategories, g.WordCategory)
 
 	// 生成 3 个选题（同分类，尽量不重复）
 	options := make([]string, 0, 3)
@@ -395,4 +403,14 @@ func (g *Game) rankingText() string {
 		lines = append(lines, fmt.Sprintf("%s %s · %d分", prefix, r.Nick, r.Score))
 	}
 	return strings.Join(lines, "\n")
+}
+
+// containsStrSlice 判断字符串切片是否包含指定值
+func containsStrSlice(list []string, s string) bool {
+	for _, v := range list {
+		if v == s {
+			return true
+		}
+	}
+	return false
 }
