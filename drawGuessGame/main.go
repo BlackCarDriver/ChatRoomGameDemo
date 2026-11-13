@@ -15,7 +15,7 @@ import (
 	"sync"
 	"time"
 
-	"ChatRoomGameDemo/nichijouSDK"
+	"github.com/BlackCarDriver/nichijouSDK"
 	"github.com/gorilla/websocket"
 )
 
@@ -1210,6 +1210,11 @@ func main() {
 	flag.IntVar(&cfg.ResultSeconds, "result-seconds", pickInt(fileCfg.ResultSeconds, "RESULT_SECONDS", 8), "回合结算展示时长（秒）")
 	flag.IntVar(&cfg.TotalRounds, "total-rounds", pickInt(fileCfg.TotalRounds, "TOTAL_ROUNDS", 0), "单局总回合数（0=每人当一次画手）")
 	flag.IntVar(&cfg.MaxPlayers, "max-players", pickInt(fileCfg.MaxPlayers, "MAX_PLAYERS", 12), "单局最大参与人数")
+	// 日志自动裁剪：run.sh 会把输出追加到日志文件，这里定期把超限的旧内容裁掉
+	logFilePath := pickString("", "LOG_FILE", "")
+	logMaxKB := pickInt(0, "LOG_MAX_KB", 200)
+	flag.StringVar(&logFilePath, "log-file", logFilePath, "日志文件路径（用于自动裁剪，留空则不裁剪）")
+	flag.IntVar(&logMaxKB, "log-max-kb", logMaxKB, "日志文件超过该大小（KB）时裁剪旧内容")
 	flag.Parse()
 
 	bridgeReady := cfg.RoomID != 0 && cfg.IntegrationID != "" && cfg.BridgeSecret != ""
@@ -1310,6 +1315,8 @@ func main() {
 	} else {
 		log.Printf("你画我猜插件 Demo 启动于 %s（页面模式，等待配置房间参数后再启用联机）", cfg.Addr)
 	}
+	startLogTrim(logFilePath, logMaxKB)
+
 	if err := http.ListenAndServe(cfg.Addr, mux); err != nil {
 		log.Fatal(err)
 	}

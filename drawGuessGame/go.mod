@@ -2,11 +2,9 @@ module ChatRoomGameDemo/drawGuessGame
 
 go 1.21
 
+require github.com/gorilla/websocket v1.5.1
+
 require (
-	ChatRoomGameDemo/nichijouSDK v0.0.0
-	github.com/gorilla/websocket v1.5.1
+	github.com/BlackCarDriver/nichijouSDK v0.1.0
+	golang.org/x/net v0.17.0 // indirect
 )
-
-require golang.org/x/net v0.17.0 // indirect
-
-replace ChatRoomGameDemo/nichijouSDK => ../nichijouSDK

@@ -11,3 +11,4 @@ config/integration.json
 shell/drawGuess.pid
 shell/drawGuess.log
 *.log
+drawGuest/config/integration.json

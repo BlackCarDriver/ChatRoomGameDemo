@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>围棋 / 五子棋 · 插件房接入 Demo</title>
+<title>围棋 / 五子棋 / 象棋 · 插件房接入 Demo</title>
 <style>
   * { box-sizing: border-box; }
   body {
@@ -36,6 +36,17 @@
   .dot { display: inline-block; width: 12px; height: 12px; border-radius: 50%; vertical-align: -1px; }
   .dot.black { background: #111; border: 1px solid #888; }
   .dot.white { background: #fff; }
+  /* 象棋：先手为红方（对应座位 1），后手黑方 */
+  .dot.red { background: #c0271f; border: 1px solid #e08a80; }
+  /* 将军提示 */
+  .checkFlag {
+    color: #ff4d4f; font-weight: 800; font-size: 14px;
+    padding: 0 8px; border-radius: 9px;
+    background: rgba(255, 77, 79, .16);
+    border: 1px solid rgba(255, 77, 79, .45);
+    animation: myTurnPulse 1s ease-in-out infinite;
+  }
+  .checkFlag[hidden] { display: none; }
   /* 轮到我落子时的提示 */
   .myTurn {
     color: #ff4d4f; font-weight: 700; font-size: 14px;
@@ -43,33 +54,135 @@
   }
   @keyframes myTurnPulse { 0%, 100% { opacity: 1; } 50% { opacity: .55; } }
   /* stretch：让侧栏撑满布局可用高度，聊天区才能占满剩余空间 */
-  /* stretch：让侧栏撑满布局可用高度，聊天区才能占满剩余空间 */
   .layout { display: flex; gap: 16px; align-items: stretch; flex: 1 1 auto; min-height: 0; }
-  /* 棋盘调大：686 = 画布内容宽 992 - 侧栏 290 - 间距 16，正好吃满无空档 */
+  /* 棋盘列：包裹棋盘（标注在棋盘顶部木质边距内，不占额外高度） */
+  .boardCol {
+    display: flex; flex-direction: column; align-items: center;
+    flex: 0 0 686px;
+  }
+  /* 当前玩法标注：显眼但自然，放在棋盘顶部木质边距内 */
+  .modeLabel {
+    position: absolute; left: 50%; top: 10px;
+    transform: translateX(-50%);
+    z-index: 5; pointer-events: none;
+    font-size: 28.8px; font-weight: 700; line-height: 1.1;
+    letter-spacing: .5em; text-indent: .5em;
+    color: #e6c889;
+    font-family: "Songti SC", "SimSun", "Noto Serif SC", serif;
+    text-shadow: 0 1px 2px rgba(0, 0, 0, .5);
+    white-space: nowrap;
+  }
   .boardWrap {
-    position: relative; flex: 0 0 686px; width: 686px; height: 700px;
+    position: relative; flex: 0 0 auto; width: 686px; height: 700px;
     background: #d9a441; border-radius: 6px; padding: 6%;
   }
+  /* ==================== 竖屏（9:16 画布）：纵向布局 ==================== */
+  /* 顶部信息分两行：左（轮次/用时）+ 右（连接状态），第二行居中放玩法切换 */
+  .page.is-portrait .topbar {
+    grid-template-columns: 1fr auto;
+    grid-template-rows: auto auto;
+    row-gap: 6px;
+  }
+  .page.is-portrait .topbarLeft { grid-column: 1; grid-row: 1; }
+  .page.is-portrait .topbarRight { grid-column: 2; grid-row: 1; }
+  .page.is-portrait .topbarCenter { grid-column: 1 / -1; grid-row: 2; justify-self: center; }
+  /* 主布局改为纵向：棋盘在上，席位/聊天在下 */
+  .page.is-portrait .layout {
+    flex-direction: column;
+    gap: 12px;
+    /* 空间不足时（例如 3:4 画布）允许纵向拖动，查看底部的席位与聊天区 */
+    overflow-y: auto;
+    overscroll-behavior: contain;
+    -webkit-overflow-scrolling: touch;
+  }
+  .page.is-portrait .boardCol {
+    flex: 0 0 auto;
+    width: 100%;
+  }
+  /* 竖屏：压缩页边距，把宽度尽量留给棋盘 */
+  .page.is-portrait { padding: 8px 8px 6px; }
+  /* 棋盘占满内容宽度并保持正方形 */
+  .page.is-portrait .boardWrap {
+    width: 100%; height: auto;
+    aspect-ratio: 1 / 1;
+    /* 手机屏幕窄，木质边距从 6% 收到 4%，网格随之变大 */
+    padding: 4%;
+  }
+  .page.is-portrait .grid { inset: 4%; }
+  /* 标注要放得进收窄后的木质边距 */
+  .page.is-portrait .modeLabel {
+    top: 1px;
+    font-size: 18px;
+    letter-spacing: .3em;
+    text-indent: .3em;
+  }
+  /* 侧栏整宽；空间够时自然撑开，空间不足时保持最小可用高度并交给外层滚动 */
+  .page.is-portrait .side {
+    flex: 0 0 auto;
+    width: auto;
+    min-height: 300px;
+  }
+  /* 竖屏空间紧：席位区收紧（小头像、小内距、小按钮） */
+  .page.is-portrait .playersCard { padding: 1.5em 10px 8px; }
+  .page.is-portrait .seatList { gap: 8px; }
+  .page.is-portrait .seatSlot { padding: 22px 6px 6px; gap: 4px; }
+  .page.is-portrait .seatSlot .avatarWrap { font-size: 11.5px; }
+  .page.is-portrait .seatName { font-size: 11.5px; }
+  .page.is-portrait .seatStatus { height: 15px; font-size: 10.5px; }
+  .page.is-portrait .seatActions { margin-top: 6px; gap: 4px; }
+  .page.is-portrait .seatActions button { padding: 4px 0; font-size: 11px; }
+  .page.is-portrait .playersCard .result { margin-top: 4px; font-size: 11px; }
+  /* 观战成员与游戏内聊天：同一行两列（观战窄、聊天宽），固定高度保证可滚动查看 */
+  .page.is-portrait .sideBottom { flex: 0 0 auto; flex-direction: row; gap: 8px; height: 190px; }
+  .page.is-portrait .watchersCard { flex: 0 0 33%; }
+  .page.is-portrait .chatCard { flex: 1 1 auto; }
+  .page.is-portrait .watchersCard .sectionTitle,
+  .page.is-portrait .chatCard .sectionTitle { font-size: 12px; margin-bottom: 6px; }
+  .page.is-portrait .watcher { width: 3em; }
+  .page.is-portrait .watcher .avatarWrap { width: 2em; height: 2em; }
+  .page.is-portrait .watcherNick { font-size: 10px; }
+  .page.is-portrait .log { font-size: 12px; line-height: 1.5; }
+
+  /* 象棋：网格按 9:10 居中，顶部木边留白较少，标注略微上移、缩小 */
+  .boardWrap.isXq .modeLabel { top: 4px; font-size: 26px; }
+  .page.is-portrait .boardWrap.isXq .modeLabel { top: 0; font-size: 16px; letter-spacing: .2em; text-indent: .2em; }
+
   .grid {
     position: absolute; inset: 6%;
-    display: grid; grid-template-columns: repeat(var(--n), 1fr); grid-template-rows: repeat(var(--n), 1fr);
-    /* 触屏拖拽时只做落子预览，不触发页面滚动/双指缩放 */
-    touch-action: none;
+    display: grid; grid-template-columns: repeat(var(--cols, 19), 1fr); grid-template-rows: repeat(var(--rows, 19), 1fr);
+    /* 落子用点击；纵向拖动交给外层滚动（竖屏查看底部席位/聊天），同时禁止双指缩放 */
+    touch-action: pan-y;
   }
+  /* 象棋：9 列 × 10 行，格子必须是正方形，网格整体按 9:10 居中放进棋盘 */
+  .grid.isXq {
+    inset: auto; left: 50%; top: 50%;
+    transform: translate(-50%, -50%);
+    height: 88%; width: auto;
+    aspect-ratio: 9 / 10;
+  }
+  .page.is-portrait .grid.isXq {
+    height: 92%;
+    inset: auto;
+    left: 50%;
+    top: 50%;
+  }
+  /* 象棋：河界处竖线断开（最左/最右两路仍贯通），形成楚河汉界 */
+  .grid.isXq .point.riverAbove::after { bottom: 50%; }
+  .grid.isXq .point.riverBelow::after { top: 50%; }
   .point { position: relative; display: flex; align-items: center; justify-content: center; cursor: default; }
   .grid.canPlay .point { cursor: pointer; }
   .point::before, .point::after { content: ''; position: absolute; background: #6d5320; }
   /* 横线：默认铺满整格；最左/最右一列只画到交点，保证最外圈平整不冒头 */
-  .point::before { left: 0; right: 0; top: 50%; height: 1px; transform: translateY(-50%); }
+  .point::before { left: 0; right: 0; top: 50%; height: 2px; transform: translateY(-50%); }
   .point.edgeL::before { left: 50%; }
   .point.edgeR::before { right: 50%; }
   /* 竖线：同上，最上/最下一行只画到交点 */
-  .point::after { top: 0; bottom: 0; left: 50%; width: 1px; transform: translateX(-50%); }
+  .point::after { top: 0; bottom: 0; left: 50%; width: 2px; transform: translateX(-50%); }
   .point.edgeT::after { top: 50%; }
   .point.edgeB::after { bottom: 50%; }
   /* 最外一圈线加粗 */
-  .point.edgeT::before, .point.edgeB::before { height: 2px; }
-  .point.edgeL::after, .point.edgeR::after { width: 2px; }
+  .point.edgeT::before, .point.edgeB::before { height: 3px; }
+  .point.edgeL::after, .point.edgeR::after { width: 3px; }
   /* 星位小圆点 */
   .starDot {
     position: absolute; left: 50%; top: 50%;
@@ -85,6 +198,77 @@
   }
   .stone.black { background: radial-gradient(circle at 32% 30%, #555, #000); }
   .stone.white { background: radial-gradient(circle at 32% 30%, #fff, #ccc); }
+  /* 象棋棋子：木纹圆盘底图（红/黑两侧由服务端下发）+ 中央汉字。
+     底图中心为奶油底色，深色双圈在半径约 60~94% 处，
+     汉字字号按格子缩放且要落进内圈：字号 0.5*格子 → 字半宽约 54% 半径，不压环。 */
+  .piece {
+    position: relative; z-index: 2;
+    width: 92%; height: 92%; border-radius: 50%;
+    display: flex; align-items: center; justify-content: center;
+    /* 底图优先；底图加载失败时退回木纹渐变 */
+    background:
+      var(--piece-img, none) center / 100% 100% no-repeat,
+      radial-gradient(circle at 34% 26%, #fff9e9, #f0dcb4 62%, #dcc08c 100%);
+    box-shadow: 0 1px 3px rgba(0,0,0,.45);
+    font-family: "Songti SC", "SimSun", "Noto Serif SC", serif;
+    font-weight: 700; line-height: 1; user-select: none; pointer-events: none;
+    font-size: calc(var(--cell, 40px) * .475);
+  }
+  .piece.red {
+    --piece-img: url('https://nichijou-1300531302.cos.ap-guangzhou.myqcloud.com/game/red3.webp');
+    color: #a32016;
+  }
+  .piece.black {
+    --piece-img: url('https://nichijou-1300531302.cos.ap-guangzhou.myqcloud.com/game/black3.webp');
+    color: #23262b;
+  }
+  /* 汉字包在 span 里做光学居中：flex 居中的是整行盒，
+     中文字体的字形重心略偏下，整体上移 1/5 字号高度与底图圆心对齐 */
+  .piece > span {
+    display: block;
+    transform: translateY(calc(-.07em - 1px));
+  }
+  /* 选中的棋子 */
+  .point.selected .piece {
+    box-shadow: 0 0 0 3px #ffd479, 0 2px 6px rgba(0,0,0,.5);
+  }
+  /* 可走点提示：空点画小圆点，有敌子画外圈 */
+  .moveTip {
+    position: absolute; left: 50%; top: 50%;
+    transform: translate(-50%, -50%);
+    width: 26%; height: 26%; min-width: 5px; min-height: 5px;
+    border-radius: 50%; background: rgba(61, 111, 214, .6);
+    z-index: 3; pointer-events: none;
+  }
+  .point.target.hasPiece .moveTip {
+    width: 92%; height: 92%; background: transparent;
+    border: 2px solid rgba(61, 111, 214, .85);
+  }
+  /* 上一步移动的棋子：金色光晕发光提示（替代原来的起点/终点标记框） */
+  .point.lastMove .piece {
+    box-shadow: 0 0 8px 3px rgba(255, 212, 121, .75), 0 1px 3px rgba(0,0,0,.45);
+    animation: lastGlow 1.2s ease-in-out infinite;
+  }
+  @keyframes lastGlow {
+    0%, 100% { box-shadow: 0 0 6px 2px rgba(255, 212, 121, .5), 0 1px 3px rgba(0,0,0,.45); }
+    50% { box-shadow: 0 0 16px 6px rgba(255, 212, 121, 1), 0 1px 3px rgba(0,0,0,.45); }
+  }
+  /* 被将军的将帅 */
+  .point.inCheck .piece {
+    box-shadow: 0 0 0 3px #ff4d4f, 0 0 12px rgba(255, 77, 79, .8);
+    animation: myTurnPulse 1s ease-in-out infinite;
+  }
+  /* 象棋棋盘装饰（九宫斜线、炮位标记、楚河汉界），用 SVG 叠加在网格上 */
+  .boardArt {
+    position: absolute; inset: 0; width: 100%; height: 100%;
+    overflow: visible; pointer-events: none; z-index: 0;
+  }
+  .boardArt line { stroke: #6d5320; stroke-width: .033; stroke-linecap: round; }
+  .boardArt text {
+    fill: #7a5c22;
+    font-family: "Songti SC", "SimSun", "Noto Serif SC", serif;
+    letter-spacing: .08em;
+  }
   /* 鼠标悬停的半透明落子预览 */
   .stone.previewStone { z-index: 3; opacity: .45; pointer-events: none; }
   .point.last .stone::after {
@@ -92,6 +276,8 @@
   }
   /* 侧栏收窄并贴右，给左边棋盘让空间 */
   .side { flex: 0 0 290px; width: 290px; display: flex; flex-direction: column; gap: 8px; min-height: 0; }
+  /* 观战 + 聊天容器：横屏纵向排列（聊天占满剩余），竖屏改横向两列 */
+  .sideBottom { display: flex; flex-direction: column; gap: 8px; flex: 1 1 auto; min-height: 0; }
   .card { background: #262933; border-radius: 8px; padding: 10px 12px; font-size: 13px; }
   /* 座位区顶部留白，给头像上的聊天气泡腾位置 */
   .playersCard { padding-top: 2.4em; overflow: visible; }
@@ -113,6 +299,7 @@
   }
   .seatColorBadge.black { background: #111; }
   .seatColorBadge.white { background: #fff; }
+  .seatColorBadge.red { background: #c0271f; border-color: #e08a80; }
   /* 蓝框表示当前该谁落子 */
   .seatSlot.isTurn {
     border-color: #3d6fd6;
@@ -123,12 +310,26 @@
     overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
   }
   .seatSlot.isOccupied .seatName { color: #eaeaea; }
+  /* 座位状态行：固定高度，准备/悔棋文案出现或消失都不会改变容器高度 */
+  .seatStatus {
+    display: flex; align-items: center; justify-content: center; gap: 6px;
+    height: 16px; max-width: 100%;
+    font-size: 11.5px; font-weight: 600; line-height: 1;
+    overflow: hidden; white-space: nowrap;
+  }
+  /* 已准备标记 */
+  .seatReady { color: #7ee787; letter-spacing: .05em; }
+  /* 已悔棋次数（红字） */
+  .seatUndo {
+    color: #ff5b5b;
+    min-width: 0; overflow: hidden; text-overflow: ellipsis;
+  }
   /* 操作按钮：头像/座位区下方排成一行 */
   .seatActions { display: flex; gap: 4px; margin-top: 10px; }
   .seatActions button {
     flex: 1 1 0; min-width: 0;
-    padding: 6px 0; font-size: 12px;
-    white-space: nowrap; letter-spacing: -.2px;
+    padding: 6px 0; font-size: 11.5px;
+    white-space: nowrap; letter-spacing: -.3px;
   }
   .playersCard .result { margin-top: 8px; font-size: 12px; text-align: center; }
 
@@ -220,6 +421,9 @@
   .log { flex: 1 1 auto; max-height: none; min-height: 0; overflow-y: auto; font-size: 12px; line-height: 1.6; color: #b9bdc7; }
   .chatRow { display: flex; gap: 6px; align-items: baseline; }
   .chatTime { flex: 0 0 auto; color: #6f7484; font-variant-numeric: tabular-nums; }
+  /* 游戏事件行（对局开始/吃子/结束）：金色系统消息 */
+  .chatRow.eventRow { color: #e6c889; }
+  .chatRow.eventRow .chatTime { color: #8d7a45; }
   .result { font-weight: 600; color: #ffd479; }
   .toast {
     position: absolute; left: 50%; top: 16px; transform: translateX(-50%);
@@ -336,6 +540,7 @@
   <div class="topbar">
     <div class="topbarSide topbarLeft">
       <span class="turn" id="turn">等待连接…</span>
+      <span class="checkFlag" id="checkFlag" hidden>将军</span>
       <span class="myTurn" id="myTurn" hidden>请你出棋</span>
       <span class="gameTime" id="gameTime" hidden></span>
     </div>
@@ -343,6 +548,7 @@
       <span class="modeSwitch" id="modeSwitch" title="切换玩法（对局中不可切换）">
         <button type="button" class="modeBtn" data-mode="go">围棋</button>
         <button type="button" class="modeBtn" data-mode="gomoku">五子棋</button>
+        <button type="button" class="modeBtn" data-mode="xiangqi">象棋</button>
       </span>
     </div>
     <div class="topbarSide topbarRight">
@@ -351,8 +557,12 @@
   </div>
 
   <div class="layout">
-    <div class="boardWrap">
-      <div class="grid" id="grid"></div>
+    <div class="boardCol">
+      <div class="boardWrap">
+        <!-- 棋盘上方：当前玩法标注（显眼但自然） -->
+        <div class="modeLabel" id="modeLabel">围棋</div>
+        <div class="grid" id="grid"></div>
+      </div>
     </div>
 
     <div class="side">
@@ -374,6 +584,10 @@
               </div>
             </div>
             <div class="seatName">空位 · 点击上座</div>
+            <div class="seatStatus">
+              <span class="seatReady" id="readyBlack"></span>
+              <span class="seatUndo" id="undoBlack"></span>
+            </div>
           </div>
           <div class="seatSlot" id="seatWhite" data-color="2" title="点击坐在白方">
             <div class="turnClock" id="clockWhite" hidden></div>
@@ -390,12 +604,17 @@
               </div>
             </div>
             <div class="seatName">空位 · 点击上座</div>
+            <div class="seatStatus">
+              <span class="seatReady" id="readyWhite"></span>
+              <span class="seatUndo" id="undoWhite"></span>
+            </div>
           </div>
         </div>
 
         <!-- 操作按钮：同一行，位于座位（头像）区下方 -->
         <div class="seatActions">
           <button id="btnStart">开始对局</button>
+          <button id="btnUndo" class="ghost">悔棋</button>
           <button id="btnLeaveSeat" class="ghost">离座</button>
           <button id="btnPass" class="ghost">停一手</button>
           <button id="btnResign" class="ghost">认输</button>
@@ -403,15 +622,17 @@
         <div class="result" id="result"></div>
       </div>
 
-      <div class="card">
-        <div class="sectionTitle">观战成员</div>
-        <div class="watcherList" id="watchers"></div>
-        <div class="emptyHint" id="watchersEmpty">暂无观战成员</div>
-      </div>
+      <div class="sideBottom">
+        <div class="card watchersCard">
+          <div class="sectionTitle">观战成员</div>
+          <div class="watcherList" id="watchers"></div>
+          <div class="emptyHint" id="watchersEmpty">暂无观战成员</div>
+        </div>
 
-      <div class="card chatCard">
-        <div class="sectionTitle">游戏内聊天（来自聊天室）</div>
-        <div class="log" id="chatLog"></div>
+        <div class="card chatCard">
+          <div class="sectionTitle">游戏内聊天（来自聊天室）</div>
+          <div class="log" id="chatLog"></div>
+        </div>
       </div>
     </div>
   </div>
@@ -436,7 +657,6 @@
       <div class="resultHeadline" id="resultHeadline"></div>
       <div class="resultDetail" id="resultDetail"></div>
       <div class="resultActions">
-        <button id="btnAgain">再来一局</button>
         <button id="btnResetGame" class="ghost">重置对局</button>
         <button id="btnCloseResult" class="ghost">关闭</button>
       </div>
@@ -475,6 +695,10 @@
   let reconnectTimer = null
   // 当前鼠标悬停的交叉点，用于半透明落子预览
   let hover = null
+  // 象棋：选中的棋子坐标，选中后高亮可走点
+  let selected = null
+  // 网格交点元素缓存（象棋棋盘带有 SVG 装饰，不能按 childIndex 取点）
+  let gridPoints = []
   // 头像气泡：nick -> { text, timer }
   const bubbles = new Map()
   let watcherSig = ''
@@ -622,6 +846,8 @@
         myFrame = msg.frame || ''
         // 重连后不重放历史落子音效：重新以当前手数为基准
         lastMoveCount = -1
+        // 重连后不补报历史事件：事件基准待下一次快照重置
+        eventBase = false
         if (snapshot) render()
       } else if (msg.type === 'state') {
         snapshot = msg
@@ -736,6 +962,30 @@
 
   // 素材为聊天室文件服务器的绝对地址
   const CHESS_SOUND_URL = 'https://nichijou-1300531302.cos.ap-guangzhou.myqcloud.com/music/chess.mp3'
+  // 倒计时提示音：剩余 30 秒播 coach、剩余 10 秒播 warn
+  const COACH_URL = 'https://nichijou-1300531302.cos.ap-guangzhou.myqcloud.com/music/coach.mp3'
+  const WARN_URL = 'https://nichijou-1300531302.cos.ap-guangzhou.myqcloud.com/music/warn.mp3'
+  let coachAudio = null
+  let warnAudio = null
+  function playCountdownSound (kind) {
+    const url = kind === 'coach' ? COACH_URL : WARN_URL
+    let audio = kind === 'coach' ? coachAudio : warnAudio
+    if (!audio) {
+      audio = new Audio(url)
+      audio.preload = 'auto'
+      if (kind === 'coach') coachAudio = audio
+      else warnAudio = audio
+    }
+    try { audio.currentTime = 0 } catch (e) {}
+    const task = audio.play()
+    if (task && task.catch) task.catch(() => {})
+  }
+  // 象棋棋子底图（红/黑两侧），提前预加载避免开局后闪烁
+  const XQ_PIECE_IMAGES = [
+    'https://nichijou-1300531302.cos.ap-guangzhou.myqcloud.com/game/red3.webp',
+    'https://nichijou-1300531302.cos.ap-guangzhou.myqcloud.com/game/black3.webp'
+  ]
+  XQ_PIECE_IMAGES.forEach(src => { const img = new Image(); img.src = src })
   let chessAudio = null
 
   function playChess () {
@@ -770,11 +1020,52 @@
 
   // ---------- 棋局数据 ----------
 
-  // 棋盘路数：国际标准 19 路，固定不可配置；等待阶段也要先画出网格
-  const BOARD_SIZE = 19
-  function boardSize () {
-    if (!snapshot) return BOARD_SIZE
-    return snapshot.size || (snapshot.game && snapshot.game.size) || BOARD_SIZE
+  // 棋盘尺寸随玩法固定（围棋 19×19 / 五子棋 15×15 / 象棋 9×10），等待阶段也要先画出网格
+  const DEFAULT_SIZE = 19
+  const MODE_LABELS = { go: '围棋', gomoku: '五子棋', xiangqi: '象棋' }
+  // 象棋棋子编码：高 4 位颜色（1=红、2=黑），低 4 位类型
+  const XQ_RED_NAMES = '帅仕相马车炮兵'
+  const XQ_BLACK_NAMES = '将士象马车炮卒'
+
+  function modeOf (game) {
+    return (game && game.mode) || (snapshot && snapshot.mode) || 'go'
+  }
+
+  function isXiangqi (game) {
+    return modeOf(game) === 'xiangqi'
+  }
+
+  function boardDims () {
+    const game = snapshot && snapshot.game
+    const cols = (snapshot && snapshot.cols) || (game && game.cols) || (snapshot && snapshot.size) || DEFAULT_SIZE
+    const rows = (snapshot && snapshot.rows) || (game && game.rows) || (snapshot && snapshot.size) || DEFAULT_SIZE
+    return { cols, rows }
+  }
+
+  function pieceColor (code) {
+    return code >> 4
+  }
+
+  function pieceType (code) {
+    return code & 0xF
+  }
+
+  function pieceName (code) {
+    const typ = pieceType(code)
+    if (typ < 1 || typ > 7) return ''
+    const names = pieceColor(code) === 2 ? XQ_BLACK_NAMES : XQ_RED_NAMES
+    return names[typ - 1]
+  }
+
+  // 座位/轮次的显示名：象棋红方先手（座位 1），黑方后手（座位 2）
+  function sideLabel (color) {
+    if (isXiangqi()) return color === 1 ? '红方' : '黑方'
+    return color === 1 ? '黑方' : '白方'
+  }
+
+  function sideDotClass (color) {
+    if (isXiangqi()) return color === 1 ? 'red' : 'black'
+    return color === 1 ? 'black' : 'white'
   }
 
   function seatNick (color) {
@@ -806,9 +1097,10 @@
 
   // ---------- 渲染 ----------
 
-  function render () {
+  function render (game) {
     if (!snapshot) return
-    const game = snapshot.game
+    game = game || snapshot.game
+    normalizeSelection(game)
     renderBoard(game)
     renderSeat(1, game)
     renderSeat(2, game)
@@ -816,18 +1108,38 @@
     renderTurn(game)
     renderButtons(game)
     renderMode(game)
+    renderModeLabel(game)
     syncBubbles()
     watchGamePhase(game)
+    trackGameEvents(game)
+  }
+
+  // 象棋选中态校验：不是我的回合、棋子已经不在了、或棋子不是我的，则取消选中
+  function normalizeSelection (game) {
+    if (!selected) return
+    if (!isXiangqi(game) || !game || game.phase !== 'playing' || game.turn !== myColor()) {
+      selected = null
+      return
+    }
+    const v = ((game.board || [])[selected.y] || [])[selected.x] || 0
+    if (!v || pieceColor(v) !== myColor()) selected = null
   }
 
   // 玩法切换按钮：高亮当前玩法，对局中禁用
   function renderMode (game) {
-    const mode = (snapshot && snapshot.mode) || 'go'
+    const mode = modeOf(game)
     const playing = Boolean(game && game.phase === 'playing')
     document.querySelectorAll('.modeBtn').forEach(btn => {
       btn.classList.toggle('isActive', btn.dataset.mode === mode)
       btn.disabled = playing
     })
+  }
+
+  // 棋盘上方标注当前玩法（显眼但自然）
+  function renderModeLabel (game) {
+    const el = document.getElementById('modeLabel')
+    if (!el) return
+    el.textContent = MODE_LABELS[modeOf(game)] || '围棋'
   }
 
   // 记录时钟偏差：后续倒计时统一用 本地时间 + 偏差 得到服务端时间
@@ -859,74 +1171,233 @@
   }
 
   function renderBoard (game) {
-    const size = boardSize()
-    const board = (game && game.board) || []
+    const { cols, rows } = boardDims()
+    // 象棋未开局时用服务端下发的开局摆法预览，其余玩法空棋盘
+    const board = (game && game.board) || (snapshot && snapshot.preview && snapshot.preview.board) || []
+    const xq = isXiangqi(game)
 
-    grid.style.setProperty('--n', size)
-    if (grid.dataset.size !== String(size)) {
-      grid.dataset.size = String(size)
+    grid.style.setProperty('--cols', cols)
+    grid.style.setProperty('--rows', rows)
+    grid.classList.toggle('isXq', xq)
+    grid.parentElement.classList.toggle('isXq', xq)
+
+    const sig = cols + 'x' + rows + (xq ? '-xq' : '')
+    if (grid.dataset.sig !== sig) {
+      grid.dataset.sig = sig
       grid.innerHTML = ''
-      const stars = new Set((STAR_POINTS[size] || []).map(([x, y]) => `${x},${y}`))
-      for (let y = 0; y < size; y++) {
-        for (let x = 0; x < size; x++) {
+      gridPoints = []
+      if (xq) grid.appendChild(buildXiangqiArt(cols, rows))
+      const stars = xq ? new Set() : new Set((STAR_POINTS[cols] || []).map(([x, y]) => `${x},${y}`))
+      for (let y = 0; y < rows; y++) {
+        for (let x = 0; x < cols; x++) {
           const p = document.createElement('div')
           p.className = 'point'
           p.dataset.x = x
           p.dataset.y = y
           // 最外一圈用于把边线画得加粗且平整（不超出交点）
           if (x === 0) p.classList.add('edgeL')
-          if (x === size - 1) p.classList.add('edgeR')
+          if (x === cols - 1) p.classList.add('edgeR')
           if (y === 0) p.classList.add('edgeT')
-          if (y === size - 1) p.classList.add('edgeB')
+          if (y === rows - 1) p.classList.add('edgeB')
+          // 象棋：河界处的竖线断开（最左/最右两路保持贯通）
+          if (xq && x > 0 && x < cols - 1) {
+            if (y === 4) p.classList.add('riverAbove')
+            if (y === 5) p.classList.add('riverBelow')
+          }
           if (stars.has(`${x},${y}`)) {
             const dot = document.createElement('div')
             dot.className = 'starDot'
             p.appendChild(dot)
           }
           p.addEventListener('click', () => onPointClick(x, y))
+          gridPoints.push(p)
           grid.appendChild(p)
         }
       }
+      syncGridMetrics()
     }
 
-    const last = game && game.moves && game.moves.length
-      ? game.moves[game.moves.length - 1]
-      : null
-    for (let y = 0; y < size; y++) {
-      for (let x = 0; x < size; x++) {
-        const p = grid.children[y * size + x]
-        const v = (board[y] && board[y][x]) || 0
-        let stone = p.querySelector('.stone:not(.previewStone)')
+    const moves = game && game.moves ? game.moves : []
+    const last = moves.length ? moves[moves.length - 1] : null
+    // 象棋视角：我是黑方时棋盘上下翻转（黑方在下、红方在上）；红方与观战者用红方视角
+    const flipped = isXiangqi(game) && myColor() === 2
+    for (let y = 0; y < rows; y++) {
+      for (let x = 0; x < cols; x++) {
+        const p = gridPoints[y * cols + x]
+        if (!p) continue
+        const by = flipped ? rows - 1 - y : y
+        const v = (board[by] && board[by][x]) || 0
+        const stone = p.querySelector('.stone:not(.previewStone)')
+        const pieceEl = p.querySelector('.piece')
         if (v === 0) {
           if (stone) stone.remove()
+          if (pieceEl) pieceEl.remove()
+        } else if (xq) {
+          if (stone) stone.remove()
+          const cls = 'piece ' + (pieceColor(v) === 2 ? 'black' : 'red')
+          const el = pieceEl || document.createElement('div')
+          el.className = cls
+          // 文字包进 span，方便做光学居中（相对字号上移 1/5，见 .piece > span）
+          let span = el.querySelector('span')
+          if (!span) {
+            span = document.createElement('span')
+            el.appendChild(span)
+          }
+          span.textContent = pieceName(v)
+          if (!pieceEl) p.appendChild(el)
         } else {
-          const cls = v === 1 ? 'black' : 'white'
-          if (!stone || !stone.classList.contains(cls)) {
+          if (pieceEl) pieceEl.remove()
+          const cls = v === 1 ? 'stone black' : 'stone white'
+          if (!stone || stone.className !== cls) {
             if (stone) stone.remove()
-            stone = document.createElement('div')
-            stone.className = 'stone ' + cls
-            p.appendChild(stone)
+            const el = document.createElement('div')
+            el.className = cls
+            p.appendChild(el)
           }
         }
-        const isLast = last && !last.pass && last.x === x && last.y === y
-        p.classList.toggle('last', !!isLast)
+        if (!xq) {
+          const isLast = last && !last.pass && last.x === x && last.y === y
+          p.classList.toggle('last', !!isLast)
+        }
       }
     }
 
+    if (xq) renderXiangqiMarks(game, cols, rows)
     grid.classList.toggle('canPlay', canPlay())
     updatePreview()
   }
 
-  // 半透明落子预览：停在空交叉点时显示己方棋子轮廓
+  // 象棋棋盘装饰：九宫斜线、炮/兵位标记、楚河汉界
+  function buildXiangqiArt (cols, rows) {
+    const NS = 'http://www.w3.org/2000/svg'
+    const svg = document.createElementNS(NS, 'svg')
+    svg.setAttribute('class', 'boardArt')
+    svg.setAttribute('viewBox', `0 0 ${cols} ${rows}`)
+    svg.setAttribute('aria-hidden', 'true')
+    // 交点在第 i 列的中心，即 i + 0.5
+    const cx = i => i + 0.5
+    const cy = j => j + 0.5
+    const line = (x1, y1, x2, y2) => {
+      const el = document.createElementNS(NS, 'line')
+      el.setAttribute('x1', x1)
+      el.setAttribute('y1', y1)
+      el.setAttribute('x2', x2)
+      el.setAttribute('y2', y2)
+      svg.appendChild(el)
+    }
+    // 九宫斜线
+    line(cx(3), cy(0), cx(5), cy(2))
+    line(cx(5), cy(0), cx(3), cy(2))
+    line(cx(3), cy(7), cx(5), cy(9))
+    line(cx(5), cy(7), cx(3), cy(9))
+    // 炮位与兵卒位的十字标记（贴边的点只画内侧）
+    const MARK_POINTS = [
+      [1, 2], [7, 2], [1, 7], [7, 7],
+      [0, 3], [2, 3], [4, 3], [6, 3], [8, 3],
+      [0, 6], [2, 6], [4, 6], [6, 6], [8, 6]
+    ]
+    const gap = 0.09
+    const len = 0.16
+    MARK_POINTS.forEach(([mx, my]) => {
+      if (mx >= cols || my >= rows) return
+      const px = cx(mx)
+      const py = cy(my)
+      ;[[-1, -1], [1, -1], [-1, 1], [1, 1]].forEach(([sx, sy]) => {
+        if ((sx < 0 && mx === 0) || (sx > 0 && mx === cols - 1)) return
+        // 角点指向交叉点，两条腿分别向外延伸（水平/竖直）
+        const nx = px + sx * gap
+        const ny = py + sy * gap
+        line(nx, ny, px + sx * (gap + len), ny)
+        line(nx, ny, nx, py + sy * (gap + len))
+      })
+    })
+    // 楚河汉界：默认位于河界中线略下方，再往下移 4 设计像素（按每格像素换算 viewBox 单位）
+    const cellPx = grid.offsetWidth / cols
+    const textDy = cellPx > 0 ? 4 / cellPx : 0.065
+    ;[['楚 河', 2], ['漢 界', 6]].forEach(([text, col]) => {
+      const el = document.createElementNS(NS, 'text')
+      el.setAttribute('x', cx(col))
+      el.setAttribute('y', 5.08 + textDy)
+      el.setAttribute('font-size', 0.62)
+      el.setAttribute('text-anchor', 'middle')
+      el.textContent = text
+      svg.appendChild(el)
+    })
+    return svg
+  }
+
+  // 象棋标记：上一步移动的棋子发光、选中棋子、可走点、被将军的将帅。
+  // 内部坐标一律为棋盘坐标；渲染时按视角翻转（黑方在下）。
+  function renderXiangqiMarks (game, cols, rows) {
+    gridPoints.forEach(p => {
+      p.classList.remove('selected', 'target', 'hasPiece', 'inCheck', 'lastMove')
+      p.querySelectorAll('.moveTip').forEach(el => el.remove())
+    })
+    if (!game) return
+
+    const board = game.board || []
+    const flipped = isXiangqi() && myColor() === 2
+    const vy = y => (flipped ? rows - 1 - y : y)
+    const at = (x, y) => ((board[y] || [])[x] || 0)
+    const pointAt = (x, y) => gridPoints[vy(y) * cols + x]
+
+    // 上一步移动的棋子：给终点棋子加发光效果
+    const moves = game.moves || []
+    const last = moves.length ? moves[moves.length - 1] : null
+    if (last && !last.pass) {
+      const p = pointAt(last.x, last.y)
+      if (p) p.classList.add('lastMove')
+    }
+
+    // 选中棋子 + 可走点（selected 与 legalMoves 均为棋盘坐标）
+    if (selected && canPlay()) {
+      const selPoint = gridPoints[vy(selected.y) * cols + selected.x]
+      if (selPoint) selPoint.classList.add('selected')
+      ;(game.legalMoves || []).forEach(m => {
+        if (m.fromX !== selected.x || m.fromY !== selected.y) return
+        const p = gridPoints[vy(m.toY) * cols + m.toX]
+        if (!p) return
+        p.classList.add('target')
+        if (at(m.toX, m.toY)) p.classList.add('hasPiece')
+        const tip = document.createElement('div')
+        tip.className = 'moveTip'
+        p.appendChild(tip)
+      })
+    }
+
+    // 被将军的一方：给将帅加红光（game.check 表示「轮到的一方被将军」）
+    if (game.phase === 'playing' && game.check) {
+      for (let y = 0; y < rows; y++) {
+        for (let x = 0; x < cols; x++) {
+          const v = at(x, y)
+          if (!v) continue
+          if (pieceType(v) !== 1 || pieceColor(v) !== game.turn) continue
+          const p = pointAt(x, y)
+          if (p) p.classList.add('inCheck')
+        }
+      }
+    }
+  }
+
+  // 把格子边长写进 CSS 变量，象棋棋子字号按格子大小缩放
+  function syncGridMetrics () {
+    const { cols } = boardDims()
+    const w = grid.offsetWidth
+    if (w && cols) grid.style.setProperty('--cell', (w / cols) + 'px')
+  }
+
+  // 半透明落子预览：停在空交叉点时显示己方棋子轮廓（象棋改用选中高亮，不显示预览）
   function updatePreview () {
     grid.querySelectorAll('.previewStone').forEach(el => el.remove())
-    if (!hover || !snapshot || !canPlay()) return
-    const size = boardSize()
+    if (isXiangqi() || !hover || !snapshot || !canPlay()) return
+    const { cols, rows } = boardDims()
     const game = snapshot.game
     const board = (game && game.board) || []
+    if (!gridPoints.length) return
     const row = board[hover.y]
     if (row && row[hover.x]) return
-    const point = grid.children[hover.y * size + hover.x]
+    if (hover.x >= cols || hover.y >= rows) return
+    const point = gridPoints[hover.y * cols + hover.x]
     if (!point) return
     const stone = document.createElement('div')
     stone.className = 'stone previewStone ' + (myColor() === 1 ? 'black' : 'white')
@@ -980,7 +1451,30 @@
     nameEl.textContent = nick ? (isMe ? `${nick}（你）` : nick) : '空位 · 点击上座'
     slot.dataset.bubble = nick
     slot.classList.toggle('isOccupied', Boolean(nick))
-    slot.title = nick ? (isMe ? '点击离座' : `${nick} 已就座`) : '点击上座'
+    slot.title = nick ? (isMe ? '点击离座' : `${nick} 已就座`) : `点击坐在${sideLabel(color)}`
+    // 座位颜色标记：象棋座位 1 为红方、座位 2 为黑方
+    const badge = slot.querySelector('.seatColorBadge')
+    if (badge) {
+      badge.className = 'seatColorBadge ' + sideDotClass(color)
+      badge.title = sideLabel(color)
+    }
+
+    // 准备状态
+    const readyEl = document.getElementById(color === 1 ? 'readyBlack' : 'readyWhite')
+    if (readyEl) {
+      const isReady = snapshot && snapshot.ready && snapshot.ready[color === 1 ? 'black' : 'white']
+      readyEl.textContent = isReady ? '已准备' : ''
+    }
+
+    // 已悔棋次数：有次数才展示（头像下方）
+    const undoEl = document.getElementById(color === 1 ? 'undoBlack' : 'undoWhite')
+    if (undoEl) {
+      const used = snapshot && snapshot.game && snapshot.game.undoUsed
+        ? (snapshot.game.undoUsed[color === 1 ? 'black' : 'white'] || 0)
+        : 0
+      // 固定高度状态行：没次数时清空文案即可，不切换 hidden，避免容器高度变化
+      undoEl.textContent = used ? `已悔棋${used}次` : ''
+    }
 
     const playing = Boolean(game && game.phase === 'playing')
     const isTurn = playing && Boolean(nick) && game.turn === color
@@ -1055,14 +1549,14 @@
     const mySeatColor = myColor()
 
     let showMyTurn = false
+    let inCheck = false
     if (game) {
       if (game.phase === 'playing') {
-        const isBlack = game.turn === 1
-        const nick = isBlack ? game.black : game.white
-        turnEl.innerHTML = (isBlack
-          ? '轮到 <span class="dot black"></span> 黑方'
-          : '轮到 <span class="dot white"></span> 白方') + (nick ? ' · ' + escapeHtml(nick) : '')
+        const nick = game.turn === 1 ? game.black : game.white
+        turnEl.innerHTML = '轮到 <span class="dot ' + sideDotClass(game.turn) + '"></span> ' +
+          sideLabel(game.turn) + (nick ? ' · ' + escapeHtml(nick) : '')
         showMyTurn = mySeatColor === game.turn
+        inCheck = Boolean(game.check)
       } else if (game.phase === 'ended') {
         turnEl.textContent = '对局结束'
       } else {
@@ -1078,6 +1572,8 @@
       resultEl.textContent = ''
     }
     myTurnEl.hidden = !showMyTurn
+    const checkEl = document.getElementById('checkFlag')
+    if (checkEl) checkEl.hidden = !inCheck
   }
 
   function escapeHtml (text) {
@@ -1091,12 +1587,36 @@
     const bothSeated = Boolean(seatNick(1) && seatNick(2))
     const playing = Boolean(game && game.phase === 'playing')
     const startBtn = document.getElementById('btnStart')
-    // 终局后同一个按钮直接重开一局
-    startBtn.textContent = game && game.phase === 'ended' ? '再来一局' : '开始对局'
-    startBtn.disabled = !bothSeated || playing
+    // 准备流程：双方都准备后自动开局；已准备再点一次取消
+    const myColorNum = myColor()
+    const myReady = myColorNum && snapshot && snapshot.ready
+      ? snapshot.ready[myColorNum === 1 ? 'black' : 'white']
+      : false
+    startBtn.textContent = myReady ? '取消准备' : '准备'
+    startBtn.disabled = !seated || playing
     document.getElementById('btnLeaveSeat').disabled = !seated
-    document.getElementById('btnPass').disabled = !(playing && seated)
+    // 象棋没有停一手
+    const passBtn = document.getElementById('btnPass')
+    passBtn.hidden = isXiangqi(game)
+    passBtn.disabled = !(playing && seated)
     document.getElementById('btnResign').disabled = !(playing && seated)
+
+    // 悔棋：对局中、自己是棋手、最后一手是自己下的（对手未落子）、且未超过次数上限
+    const undoBtn = document.getElementById('btnUndo')
+    if (undoBtn) {
+      const myColorNum2 = myColor()
+      const moves = (game && game.moves) || []
+      const last = moves.length ? moves[moves.length - 1] : null
+      const used = game && game.undoUsed
+        ? (game.undoUsed[myColorNum2 === 1 ? 'black' : 'white'] || 0)
+        : 0
+      const maxUndo = (snapshot && snapshot.game && snapshot.game.maxUndo) || 3
+      const lastIsMine = Boolean(last) && !last.pass && myColorNum2 && last.color === myColorNum2
+      undoBtn.disabled = !(playing && seated && lastIsMine && used < maxUndo)
+      const left = Math.max(0, maxUndo - used)
+      undoBtn.textContent = '悔棋'
+      undoBtn.title = left > 0 ? `回退自己最后一手（本局还剩 ${left} 次）` : '本局悔棋次数已用完'
+    }
   }
 
   // ---------- 回合倒计时 ----------
@@ -1109,9 +1629,13 @@
 
   // 倒计时以服务端 turnDeadline 为准，本地只负责每秒重绘。
   // 位置：当前该出棋一方的座位头像上方（黑座 clockBlack / 白座 clockWhite）
+  // 提示音：每回合在剩余时间跨过 30 秒/10 秒阈值时各播一次（coach/warn）
+  let countdownKey = ''
+  let lastCountdownRemain = Infinity
   function tickCountdown () {
     const game = snapshot && snapshot.game
     const activeTurn = game && game.phase === 'playing' ? game.turn : 0
+    let remainNow = Infinity
     for (const color of [1, 2]) {
       const el = document.getElementById(color === 1 ? 'clockBlack' : 'clockWhite')
       if (!el) continue
@@ -1122,10 +1646,28 @@
       const remain = Math.max(0, Math.ceil(remainMs / 1000))
       el.textContent = '剩余 ' + formatClock(remain)
       el.classList.toggle('isUrgent', remain <= 10)
+      if (remainNow === Infinity || remain < remainNow) remainNow = remain
+    }
+
+    if (remainNow !== Infinity) {
+      const key = activeTurn + ':' + (game.turnDeadline || 0)
+      if (key !== countdownKey) {
+        // 新回合/开局：只设基准，避免回合本身不足 30 秒时开局误响提示音
+        countdownKey = key
+        lastCountdownRemain = remainNow
+      } else {
+        if (remainNow <= 30 && lastCountdownRemain > 30) playCountdownSound('coach')
+        if (remainNow <= 10 && lastCountdownRemain > 10) playCountdownSound('warn')
+        lastCountdownRemain = remainNow
+      }
+    } else {
+      // 对局结束/回合切换瞬间：重置，下一回合重新从基准开始
+      countdownKey = ''
+      lastCountdownRemain = Infinity
     }
   }
 
-  // 本局用时：以开局时刻 startedAt 为准，配合时钟偏差本地每秒重绘
+  // 本局用时：对局中以 startedAt 实时走秒；结束后以 endedAt 截止固定，不再增长
   function tickGameTime () {
     const el = document.getElementById('gameTime')
     const game = snapshot && snapshot.game
@@ -1134,7 +1676,8 @@
       el.textContent = ''
       return
     }
-    const elapsed = Math.max(0, Math.floor(((Date.now() + clockSkew) - game.startedAt) / 1000))
+    const endRef = game.phase === 'ended' && game.endedAt > 0 ? game.endedAt : (Date.now() + clockSkew)
+    const elapsed = Math.max(0, Math.floor((endRef - game.startedAt) / 1000))
     el.hidden = false
     el.textContent = '本局用时 ' + formatClock(elapsed)
   }
@@ -1149,6 +1692,10 @@
     const detail = document.getElementById('resultDetail')
     const fx = document.getElementById('resultFx')
     const mySeatColor = myColor()
+    // 只有本局棋手（黑/白座位上的玩家）能看到操作按钮，观战者只留“关闭”
+    const isPlayer = Boolean(game) && myNick && (myNick === game.black || myNick === game.white)
+    const resetBtn = document.getElementById('btnResetGame')
+    if (resetBtn) resetBtn.hidden = !isPlayer
 
     let text = '平局'
     let cls = 'isDraw'
@@ -1174,7 +1721,7 @@
     const lines = []
     if (game.result) lines.push(escapeHtml(game.result))
     if (game.black || game.white) {
-      lines.push(`黑方 ${escapeHtml(game.black || '—')} · 白方 ${escapeHtml(game.white || '—')}`)
+      lines.push(`${sideLabel(1)} ${escapeHtml(game.black || '—')} · ${sideLabel(2)} ${escapeHtml(game.white || '—')}`)
     }
     detail.innerHTML = lines.join('<br>')
 
@@ -1206,13 +1753,15 @@
   function showBubble (nick, text) {
     if (!nick || !text) return
     const fixed = text.length > BUBBLE_LIMIT ? text.slice(0, BUBBLE_LIMIT) + '...' : text
+    // 表情指令渲染成图片，其余文本转义（复用聊天区渲染逻辑，气泡不带昵称前缀）
+    const html = renderChatBody('', fixed)
     const prev = bubbles.get(nick)
     if (prev && prev.timer) clearTimeout(prev.timer)
     const timer = setTimeout(() => {
       bubbles.delete(nick)
       syncBubbles()
     }, BUBBLE_MS)
-    bubbles.set(nick, { text: fixed, timer })
+    bubbles.set(nick, { text: fixed, html, timer })
     syncBubbles()
   }
 
@@ -1225,10 +1774,33 @@
       if (!bubbleEl) return
       const textEl = bubbleEl.querySelector('.bubbleText')
       if (!textEl) return
-      const text = item ? item.text : ''
-      if (textEl.textContent !== text) textEl.textContent = text
-      bubbleEl.classList.toggle('show', Boolean(text))
+      const html = item ? item.html : ''
+      if (textEl.innerHTML !== html) textEl.innerHTML = html
+      bubbleEl.classList.toggle('show', Boolean(html))
     })
+  }
+
+  // 游戏内聊天的内置表情：指令完全匹配时渲染为图片（与聊天室行为一致）
+  const EMOTICON_BASE = 'https://nichijou-1300531302.cos.ap-guangzhou.myqcloud.com/emoticon/'
+  const IN_GAME_EMOTIONS = [
+    { keys: ['/坏笑', '/淳朴'], name: 'badgrin.gif', width: '2em', height: '2em' },
+    { keys: ['/猪头', '/笨', '/猪'], name: 'pig.gif', width: '1.5em', height: '1.5em' },
+    { keys: ['/不幸', '/衰'], name: 'badluck.gif', width: '1.5em', height: '1.5em' },
+    { keys: ['/怒', '/锤'], name: 'nu.gif', height: '5em' },
+    { keys: ['/吸烟'], name: 'smok.gif', width: '1.5em', height: '1.5em' }
+  ]
+
+  // 渲染聊天正文：整条消息命中表情指令则输出图片，否则纯文本（已转义防 XSS）
+  function renderChatBody (nick, text) {
+    const emo = IN_GAME_EMOTIONS.find(e => e.keys.includes(text.trim()))
+    if (emo) {
+      const wh = []
+      if (emo.width) wh.push('width:' + emo.width)
+      if (emo.height) wh.push('height:' + emo.height)
+      return escapeHtml(nick ? nick + ': ' : '') +
+        `<img src="${EMOTICON_BASE}${emo.name}" style="${wh.join(';')};vertical-align:middle" alt="" loading="lazy">`
+    }
+    return escapeHtml((nick ? nick + ': ' : '') + text)
   }
 
   function addChat (nick, text, avatar, frame, timestamp) {
@@ -1239,20 +1811,84 @@
     timeEl.className = 'chatTime'
     timeEl.textContent = formatChatTime(timestamp)
     const bodyEl = document.createElement('span')
-    bodyEl.textContent = (nick ? nick + ': ' : '') + text
+    bodyEl.innerHTML = renderChatBody(nick, text)
     row.appendChild(timeEl)
     row.appendChild(bodyEl)
     log.appendChild(row)
     log.scrollTop = log.scrollHeight
     // 消息到达即响铃（与音乐房一致，自己发的也会响）
     playRing()
-    // 头像资料以房间快照为准，快照缺失时用消息自带的资料兜底
-    if (nick && !userOf(nick) && (avatar || frame)) {
+    // 头像资料以房间快照为准，快照缺失时用消息自带的资料兜底；
+    // 游客消息没有头像资料也要加入观战列表，否则气泡没有可挂载的头像节点
+    if (nick && !userOf(nick)) {
       if (!snapshot) return
       snapshot.users = (snapshot.users || []).concat([{ nick, avatar, frame, state: 'spectating' }])
       render()
     }
     showBubble(nick, text)
+  }
+
+  // 游戏事件（对局开始/吃子/结束）写入游戏内聊天区，金色系统行
+  function addEvent (text) {
+    const log = document.getElementById('chatLog')
+    const row = document.createElement('div')
+    row.className = 'chatRow eventRow'
+    const timeEl = document.createElement('span')
+    timeEl.className = 'chatTime'
+    timeEl.textContent = formatChatTime(Math.floor(Date.now() / 1000))
+    const bodyEl = document.createElement('span')
+    bodyEl.textContent = text
+    row.appendChild(timeEl)
+    row.appendChild(bodyEl)
+    log.appendChild(row)
+    log.scrollTop = log.scrollHeight
+  }
+
+  // 事件基准：首次快照（含重连/换局）只设基准，不补报历史事件
+  let eventBase = false
+  let eventPhase = 'waiting'
+  let eventMoveCount = -1
+  function trackGameEvents (game) {
+    if (!game) {
+      // 无对局（等待/已重置/换玩法）：记住状态，开局时才能上报开始事件
+      eventBase = true
+      eventPhase = 'waiting'
+      eventMoveCount = -1
+      return
+    }
+    const phase = game.phase
+    const moves = game.moves || []
+    const mc = moves.length
+    if (!eventBase) {
+      // 重连/中途加入：只设基准，不补报历史事件
+      eventBase = true
+      eventPhase = phase
+      eventMoveCount = phase === 'playing' ? mc : -1
+      return
+    }
+    const xq = isXiangqi(game)
+    // 对局开始
+    if (phase === 'playing' && eventPhase !== 'playing') {
+      addEvent(`对局开始：${sideLabel(1)} ${game.black || '—'} vs ${sideLabel(2)} ${game.white || '—'}`)
+      eventMoveCount = mc
+    } else if (phase === 'playing' && mc > eventMoveCount && eventMoveCount >= 0) {
+      // 新走子：吃子/提子事件
+      const m = moves[mc - 1]
+      if (m && !m.pass) {
+        if (xq && m.taken) {
+          addEvent(`${m.nick} 吃掉${pieceName(m.taken)}`)
+        } else if (!xq && m.captured > 0) {
+          addEvent(`${m.nick} 提子 ${m.captured} 枚`)
+        }
+      }
+      eventMoveCount = mc
+    }
+    // 对局结束（含认输/将死/超时/离座中止）
+    if (phase === 'ended' && eventPhase === 'playing' && game.result) {
+      addEvent(`对局结束：${game.result}`)
+    }
+    eventPhase = phase
+    if (phase !== 'playing') eventMoveCount = -1
   }
 
   function formatChatTime (timestamp) {
@@ -1265,23 +1901,76 @@
   function onPointClick (x, y) {
     if (!snapshot) return
     if (!canPlay()) {
-      if (!myColor()) return
+      if (!myColor()) {
+        // 观战者点击棋盘：象棋提示棋盘状态，其余玩法静默忽略
+        return
+      }
       toast(snapshot.game ? '还没轮到你落子' : '对局尚未开始')
+      return
+    }
+    if (isXiangqi()) {
+      handleXiangqiClick(x, y)
       return
     }
     send({ type: 'place', x, y })
   }
 
+  // 象棋：先点己方棋子选中，再点高亮点走子；点其它地方取消选中。
+  // 点击坐标为显示坐标，黑方视角下棋盘上下翻转，先换算成棋盘坐标再处理。
+  function handleXiangqiClick (x, y) {
+    const game = snapshot && snapshot.game
+    if (!game) return
+    const { rows } = boardDims()
+    const ry = (isXiangqi() && myColor() === 2) ? rows - 1 - y : y
+    const board = game.board || []
+    const v = (board[ry] && board[ry][x]) || 0
+    const mine = pieceColor(v) === myColor()
+
+    if (selected) {
+      const target = (game.legalMoves || []).some(m =>
+        m.fromX === selected.x && m.fromY === selected.y && m.toX === x && m.toY === ry)
+      if (target) {
+        const from = selected
+        selected = null
+        send({ type: 'move', fromX: from.x, fromY: from.y, x, y: ry })
+        return
+      }
+      if (mine) {
+        selected = { x, y: ry }
+        render()
+        return
+      }
+      if (v) {
+        // 点到对方棋子：不是可吃子，提示并取消选中
+        toast('这不是可走的着法')
+        selected = null
+        render()
+        return
+      }
+      selected = null
+      render()
+      return
+    }
+
+    if (mine) {
+      selected = { x, y: ry }
+      render()
+    } else if (v) {
+      toast('不能动对方的棋子')
+    }
+  }
+
   // 用 Pointer Events 计算交叉点（鼠标 / 触摸 / 手写笔通用）：
   // 移动/按下时显示预览，抬起/离开时隐藏；快速划过也不会漏掉。
   function updatePointerHover (event) {
-    const size = boardSize()
+    const { cols, rows } = boardDims()
     const rect = grid.getBoundingClientRect()
-    const cell = rect.width / size
-    if (!cell) return
-    const x = Math.floor((event.clientX - rect.left) / cell)
-    const y = Math.floor((event.clientY - rect.top) / cell)
-    if (x < 0 || y < 0 || x >= size || y >= size) {
+    const cellW = rect.width / cols
+    const cellH = rect.height / rows
+    if (!cellW || !cellH) return
+    const x = Math.floor((event.clientX - rect.left) / cellW)
+    const y = Math.floor((event.clientY - rect.top) / cellH)
+    if (x < 0 || y < 0 || x >= cols || y >= rows) {
       setHover(null)
       return
     }
@@ -1333,14 +2022,33 @@
 
   // 设计画布固定为 1024x768（4:3，与外壳 canvasRatio 一致），
   // 视口任意大小都整体按比例缩放，内容展示比例保持不变。
-  const PAGE_W = 1024
-  const PAGE_H = 768
+  // 横屏用 4:3 画布，竖屏用 9:16 画布；由外壳决定 iframe 比例，页面按视口自适应
+  const LANDSCAPE_W = 1024
+  const LANDSCAPE_H = 768
+  const PORTRAIT_W = 540
+  const PORTRAIT_H = 960
+  // 竖屏画布最矮高度：只需保证顶部栏 + 一块能看见的棋盘，
+  // 更矮的区域（如 3:4）由 layout 纵向滚动兜底。
+  const PORTRAIT_MIN_H = 560
   const pageEl = document.getElementById('page')
 
   function fitPage () {
     if (!pageEl) return
-    const scale = Math.min(innerWidth / PAGE_W, innerHeight / PAGE_H)
+    // 视口高大于宽（比例 < 0.9）视为竖屏
+    const portrait = innerWidth / innerHeight < 0.9
+    const w = portrait ? PORTRAIT_W : LANDSCAPE_W
+    // 竖屏时高度跟随实际视口比例：外壳给的是 3:4 / 9:16 / 铺满都能正好铺满，
+    // 这样页面宽度撑满 iframe，棋盘也就能按最大宽度渲染。
+    const h = portrait
+      ? Math.max(PORTRAIT_MIN_H, Math.round(w * innerHeight / Math.max(innerWidth, 1)))
+      : LANDSCAPE_H
+    pageEl.classList.toggle('is-portrait', portrait)
+    pageEl.style.width = w + 'px'
+    pageEl.style.height = h + 'px'
+    const scale = Math.min(innerWidth / w, innerHeight / h)
     pageEl.style.transform = 'translate(-50%, -50%) scale(' + scale + ')'
+    // 横竖屏切换后棋盘尺寸会变（象棋棋子字号按格子大小缩放）
+    syncGridMetrics()
   }
 
   window.addEventListener('resize', fitPage)
@@ -1401,15 +2109,12 @@
   }
 
   document.getElementById('btnLeaveSeat').onclick = () => send({ type: 'leave_seat' })
-  document.getElementById('btnStart').onclick = () => send({ type: 'start' })
+  document.getElementById('btnStart').onclick = () => send({ type: 'ready' })
+  document.getElementById('btnUndo').onclick = () => send({ type: 'undo' })
   document.getElementById('btnPass').onclick = () => send({ type: 'pass' })
   document.getElementById('btnResign').onclick = () => send({ type: 'resign' })
 
   // 终局弹窗操作
-  document.getElementById('btnAgain').onclick = () => {
-    hideResult()
-    send({ type: 'start' })
-  }
   document.getElementById('btnResetGame').onclick = () => {
     hideResult()
     send({ type: 'reset' })

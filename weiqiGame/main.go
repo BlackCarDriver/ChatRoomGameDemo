@@ -15,7 +15,7 @@ import (
 	"sync"
 	"time"
 
-	"ChatRoomGameDemo/nichijouSDK"
+	"github.com/BlackCarDriver/nichijouSDK"
 	"github.com/gorilla/websocket"
 )
 
@@ -92,9 +92,17 @@ type Hub struct {
 	// pendingRelease 待释放座位：nick -> 计划释放时刻（unix 毫秒）。
 	// 仅用于断开后的宽限期；离座/离房/换座等主动操作不走这里。
 	pendingRelease map[string]int64
+
+	// ready 各座位的准备状态：color -> 是否已准备。
+	// 双方都准备后自动开局；开局/重置/换座/离座/离房/换玩法时清空。
+	ready map[int]bool
 }
 
+// gameHub 房间内所有对局与连接
 var gameHub = NewHub(nil)
+
+// xiangqiPreviewBoard 象棋开局摆法（只读）：未开局时下发给前端先画出棋子
+var xiangqiPreviewBoard = NewXiangqiBoard()
 
 // NewHub 创建 hub
 func NewHub(bridge *nichijouSDK.Bridge) *Hub {
@@ -105,6 +113,7 @@ func NewHub(bridge *nichijouSDK.Bridge) *Hub {
 		turnSeconds:        60,
 		seatReconnectGrace: 30 * time.Second,
 		pendingRelease:     map[string]int64{},
+		ready:              map[int]bool{},
 		bridge:             bridge,
 	}
 }
@@ -164,6 +173,10 @@ func (h *Hub) snapshot() map[string]interface{} {
 		"black": h.seats[ColorBlack],
 		"white": h.seats[ColorWhite],
 	}
+	ready := map[string]bool{
+		"black": h.ready[ColorBlack],
+		"white": h.ready[ColorWhite],
+	}
 	mode := h.mode
 	if mode == "" {
 		mode = ModeGo
@@ -188,10 +201,13 @@ func (h *Hub) snapshot() map[string]interface{} {
 
 	var game map[string]interface{}
 	if h.game != nil {
+		board := h.game.Board
 		game = map[string]interface{}{
 			"mode":     h.game.Mode,
-			"board":    h.game.Board.Cells,
-			"size":     h.game.Board.Size,
+			"board":    board.Cells,
+			"size":     BoardSizeForMode(h.game.Mode),
+			"cols":     board.W,
+			"rows":     board.H,
 			"turn":     h.game.Turn,
 			"phase":    h.game.Phase,
 			"black":    h.game.Black,
@@ -204,19 +220,48 @@ func (h *Hub) snapshot() map[string]interface{} {
 			"abandoned": h.game.Abandoned,
 			// 本回合截止时间（服务端毫秒），前端配合 serverNow 换算剩余秒数
 			"turnDeadline": h.game.TurnDeadline,
-			// startedAt 开局时刻（服务端毫秒），前端据此展示本局用时
+			// startedAt 开局时刻（服务端毫秒），前端据此展示本局用时；
+			// endedAt 终局时刻（服务端毫秒），结束后本局用时固定不再走秒
 			"startedAt": h.game.StartedAt,
+			"endedAt":   h.game.EndedAt,
+			// undoUsed 各方已悔棋次数（每局上限 maxUndo），前端在头像下方展示
+			"undoUsed": map[string]int{
+				"black": h.game.UndoUsed[ColorBlack],
+				"white": h.game.UndoUsed[ColorWhite],
+			},
+			"maxUndo": maxUndoPerGame,
+		}
+		// 象棋额外下发合法走法（用于选中棋子后高亮可走点）与将军提示。
+		// 象棋没有隐藏信息，公开当前一方的合法着法不会泄漏牌面。
+		if h.game.Mode == ModeXiangqi && h.game.Phase == PhasePlaying {
+			game["legalMoves"] = xqLegalMovesJSON(board, h.game.Turn)
+			game["check"] = h.game.xqInCheckNow()
+		}
+	}
+	cols, rows := BoardDimsForMode(mode)
+	// 象棋在等待阶段也把开局摆法画出来，玩家一进房就能看到棋盘与棋子
+	var preview map[string]interface{}
+	if mode == ModeXiangqi && h.game == nil {
+		preview = map[string]interface{}{
+			"board": xiangqiPreviewBoard.Cells,
+			"cols":  cols,
+			"rows":  rows,
 		}
 	}
 	return map[string]interface{}{
 		"type":  "state",
 		"seats": seats,
+		"ready": ready,
 		"users": users,
 		"game":  game,
-		// mode 当前玩法；size 随玩法固定（围棋 19 路 / 五子棋 15 路），
+		// preview 仅象棋在未开局时下发（开局摆法预览）
+		"preview": preview,
+		// mode 当前玩法；棋盘尺寸随玩法固定（围棋 19 路 / 五子棋 15 路 / 象棋 9×10），
 		// 等待阶段也要下发，前端才能先画出棋盘
 		"mode": mode,
 		"size": BoardSizeForMode(mode),
+		"cols": cols,
+		"rows": rows,
 		// serverNow 用于消除客户端与服务器的时钟偏差（倒计时）
 		"serverNow":   time.Now().UnixMilli(),
 		"seatNo":      2,
@@ -282,6 +327,11 @@ func (h *Hub) OnUserLeaveRoom(nick string) {
 	h.lock.Lock()
 	// 离开房间属于主动离开：清掉待释放标记，座位立即释放
 	delete(h.pendingRelease, nick)
+	for color, seatNick := range h.seats {
+		if seatNick == nick {
+			delete(h.ready, color)
+		}
+	}
 	if c, ok := h.clients[nick]; ok {
 		close(c.send)
 		_ = c.conn.Close()
@@ -294,7 +344,7 @@ func (h *Hub) OnUserLeaveRoom(nick string) {
 	}
 	// 棋手离开则本局作废，避免出现幽灵对局
 	if h.game != nil && h.game.Phase == PhasePlaying && (h.game.Black == nick || h.game.White == nick) {
-		h.game.Phase = PhaseEnded
+		h.game.endGame()
 		h.game.Abandoned = true
 		h.game.Result = fmt.Sprintf("%s 离开房间，对局中止", nick)
 	}
@@ -331,10 +381,7 @@ func (h *Hub) roomLPLocked() string {
 
 // modeLabel 当前玩法的中文名
 func (h *Hub) modeLabel() string {
-	if h.mode == ModeGomoku {
-		return "五子棋"
-	}
-	return "围棋"
+	return ModeLabel(h.mode)
 }
 
 // syncRoomLP 向聊天室同步一次卡片副文案
@@ -344,31 +391,67 @@ func (h *Hub) syncRoomLP() {
 	}
 }
 
-// StartGame 开始对局
-func (h *Hub) StartGame() error {
-	h.lock.Lock()
+// startLocked 在持锁状态下创建对局并清空准备状态（调用方需持锁）。
+func (h *Hub) startLocked() error {
 	black, white := h.seats[ColorBlack], h.seats[ColorWhite]
 	if black == "" || white == "" {
-		h.lock.Unlock()
 		return fmt.Errorf("需要两位棋手就座才能开始")
 	}
 	mode := h.mode
 	if mode == "" {
 		mode = ModeGo
 	}
-	h.game = NewGame(BoardSizeForMode(mode), black, white)
-	h.game.Mode = mode
-	// 黑方先行，开局即开始计时
+	h.game = NewGame(mode, black, white)
+	// 黑方先行，开局即开始计时；双方都已准备，开局后清空准备状态
 	h.armTurnTimerLocked()
-	h.lock.Unlock()
+	h.ready = map[int]bool{}
+	return nil
+}
 
+// StartGame 开始对局（对外入口，供测试与兼容使用；客户端现在走“准备”流程）
+func (h *Hub) StartGame() error {
+	h.lock.Lock()
+	err := h.startLocked()
+	h.lock.Unlock()
+	if err != nil {
+		return err
+	}
 	if h.bridge != nil {
-		h.bridge.EventLog(fmt.Sprintf("对局开始：%s 执黑 vs %s 执白", black, white))
+		h.bridge.EventLog(fmt.Sprintf("对局开始：%s 执黑 vs %s 执白", h.game.Black, h.game.White))
 	}
 	h.syncRoomLP()
 	h.reportAll()
 	h.Broadcast()
 	return nil
+}
+
+// setReadyLocked 切换某座位的准备状态（调用方需持锁）。
+// 返回该座是否已准备，以及双方都准备好后是否应自动开局。
+func (h *Hub) setReadyLocked(color int) (nowReady, shouldStart bool) {
+	nowReady = !h.ready[color]
+	if nowReady {
+		h.ready[color] = true
+	} else {
+		delete(h.ready, color)
+	}
+	shouldStart = h.ready[ColorBlack] && h.ready[ColorWhite]
+	return
+}
+
+// clearReadyAllLocked 清空全部准备状态（调用方需持锁）
+func (h *Hub) clearReadyAllLocked() {
+	h.ready = map[int]bool{}
+}
+
+// seatColorLocked 返回某昵称的座位颜色（0 表示未上座，调用方需持锁）
+func (h *Hub) seatColorLocked(nick string) int {
+	if h.seats[ColorBlack] == nick {
+		return ColorBlack
+	}
+	if h.seats[ColorWhite] == nick {
+		return ColorWhite
+	}
+	return 0
 }
 
 // abortGameOnSeatChangeLocked 对局进行中，棋手离座/换座则本局中止（调用方需持锁）。
@@ -380,10 +463,11 @@ func (h *Hub) abortGameOnSeatChangeLocked(nick string) (bool, string) {
 	if h.game.Black != nick && h.game.White != nick {
 		return false, ""
 	}
-	h.game.Phase = PhaseEnded
+	h.game.endGame()
 	h.game.Abandoned = true
 	h.game.Result = fmt.Sprintf("%s 离座，对局中止", nick)
 	h.armTurnTimerLocked()
+	h.clearReadyAllLocked()
 	return true, h.game.Result
 }
 
@@ -437,10 +521,11 @@ func (h *Hub) releaseSeatLocked(nick string) (string, bool) {
 	for color, seatNick := range h.seats {
 		if seatNick == nick {
 			delete(h.seats, color)
+			delete(h.ready, color)
 		}
 	}
 	if h.game != nil && h.game.Phase == PhasePlaying && (h.game.Black == nick || h.game.White == nick) {
-		h.game.Phase = PhaseEnded
+		h.game.endGame()
 		h.game.Abandoned = true
 		h.game.Result = fmt.Sprintf("%s 掉线，对局中止", nick)
 		aborted = true
@@ -471,6 +556,7 @@ func (h *Hub) ResetGame(nick string) error {
 	h.game = nil
 	// 停表（game 为 nil 时 armTurnTimerLocked 只做停止）
 	h.armTurnTimerLocked()
+	h.clearReadyAllLocked()
 	h.lock.Unlock()
 
 	if h.bridge != nil {
@@ -482,10 +568,10 @@ func (h *Hub) ResetGame(nick string) error {
 	return nil
 }
 
-// SetMode 切换玩法（围棋 / 五子棋）。
+// SetMode 切换玩法（围棋 / 五子棋 / 象棋）。
 // 对局进行中不允许切换；切换时清空已结束的对局，因为旧棋盘尺寸/棋形不再适用。
 func (h *Hub) SetMode(mode string) error {
-	if mode != ModeGo && mode != ModeGomoku {
+	if mode != ModeGo && mode != ModeGomoku && mode != ModeXiangqi {
 		return fmt.Errorf("不支持的玩法")
 	}
 	h.lock.Lock()
@@ -500,6 +586,7 @@ func (h *Hub) SetMode(mode string) error {
 	h.mode = mode
 	h.game = nil
 	h.armTurnTimerLocked()
+	h.clearReadyAllLocked()
 	h.lock.Unlock()
 
 	if h.bridge != nil {
@@ -552,7 +639,11 @@ func (h *Hub) onTurnTimeout(seq int64) {
 	h.lock.Unlock()
 
 	if nick != "" && h.bridge != nil {
-		h.bridge.EventLog(fmt.Sprintf("【%s】思考超时，视为放弃一手", nick))
+		if game.Mode == ModeXiangqi {
+			h.bridge.EventLog(fmt.Sprintf("【%s】思考超时，判负", nick))
+		} else {
+			h.bridge.EventLog(fmt.Sprintf("【%s】思考超时，视为放弃一手", nick))
+		}
 	}
 	if finished {
 		if h.bridge != nil && result != "" {
@@ -697,6 +788,9 @@ func (s *Handler) handleClientMessage(c *client, data []byte) {
 		X     int    `json:"x"`
 		Y     int    `json:"y"`
 		Mode  string `json:"mode"`
+		// FromX/FromY 象棋走子的起点（先选棋子再点终点）；用指针区分“没传”与“传了 0”
+		FromX *int `json:"fromX"`
+		FromY *int `json:"fromY"`
 		// Value 用于布尔型指令，如全屏开关（true=进入全屏/最大化，false=退出全屏）
 		Value bool `json:"value"`
 	}
@@ -726,9 +820,11 @@ func (s *Handler) handleClientMessage(c *client, data []byte) {
 		for color, seatNick := range gameHub.seats {
 			if seatNick == c.nick {
 				delete(gameHub.seats, color)
+				delete(gameHub.ready, color)
 			}
 		}
 		gameHub.seats[msg.Color] = c.nick
+		delete(gameHub.ready, msg.Color) // 新座位未准备
 		gameHub.lock.Unlock()
 		if aborted {
 			s.notifyGameAborted(result)
@@ -744,6 +840,7 @@ func (s *Handler) handleClientMessage(c *client, data []byte) {
 		for color, seatNick := range gameHub.seats {
 			if seatNick == c.nick {
 				delete(gameHub.seats, color)
+				delete(gameHub.ready, color)
 			}
 		}
 		gameHub.lock.Unlock()
@@ -754,9 +851,43 @@ func (s *Handler) handleClientMessage(c *client, data []byte) {
 		gameHub.report(c.nick)
 		gameHub.Broadcast()
 
-	case "start":
-		if err := gameHub.StartGame(); err != nil {
-			s.sendErr(c, err.Error())
+	case "ready":
+		// 上座后“准备”：双方都准备则自动开局；再点一次取消准备
+		var started bool
+		gameHub.lock.Lock()
+		color := gameHub.seatColorLocked(c.nick)
+		if color == 0 {
+			gameHub.lock.Unlock()
+			s.sendErr(c, "请先上座")
+			return
+		}
+		if gameHub.game != nil && gameHub.game.Phase == PhasePlaying {
+			gameHub.lock.Unlock()
+			s.sendErr(c, "对局已开始")
+			return
+		}
+		_, shouldStart := gameHub.setReadyLocked(color)
+		if shouldStart {
+			if err := gameHub.startLocked(); err != nil {
+				gameHub.lock.Unlock()
+				s.sendErr(c, err.Error())
+				return
+			}
+			started = true
+		}
+		gameHub.lock.Unlock()
+
+		if started {
+			if gameHub.bridge != nil {
+				gameHub.bridge.EventLog(fmt.Sprintf("对局开始：%s 执黑 vs %s 执白", gameHub.game.Black, gameHub.game.White))
+			}
+			gameHub.syncRoomLP()
+			gameHub.reportAll()
+			gameHub.Broadcast()
+		} else {
+			gameHub.syncRoomLP()
+			gameHub.reportAll()
+			gameHub.Broadcast()
 		}
 
 	case "reset":
@@ -769,14 +900,22 @@ func (s *Handler) handleClientMessage(c *client, data []byte) {
 			s.sendErr(c, err.Error())
 		}
 
-	case "place":
+	case "place", "move":
+		// 围棋/五子棋直接点交叉点落子；象棋先选棋子再点终点，需带上起点 fromX/fromY
+		fromX, fromY := -1, -1
+		if msg.FromX != nil {
+			fromX = *msg.FromX
+		}
+		if msg.FromY != nil {
+			fromY = *msg.FromY
+		}
 		gameHub.lock.Lock()
 		game := gameHub.game
 		var err error
 		if game == nil {
 			err = fmt.Errorf("对局尚未开始")
 		} else {
-			err = game.Place(c.nick, msg.X, msg.Y)
+			err = game.Place(c.nick, fromX, fromY, msg.X, msg.Y)
 		}
 		var finished bool
 		var result string
@@ -795,6 +934,27 @@ func (s *Handler) handleClientMessage(c *client, data []byte) {
 		}
 		if finished {
 			s.finishGame(result)
+		}
+		gameHub.Broadcast()
+
+	case "undo":
+		// 悔棋：无需对手同意，回退自己刚下的一手（对手落子前可用，每局最多 3 次）
+		gameHub.lock.Lock()
+		game := gameHub.game
+		var err error
+		if game == nil {
+			err = fmt.Errorf("对局尚未开始")
+		} else {
+			_, err = game.Undo(c.nick)
+		}
+		if err == nil {
+			// 回合回到自己，重新开始计时
+			gameHub.armTurnTimerLocked()
+		}
+		gameHub.lock.Unlock()
+		if err != nil {
+			s.sendErr(c, err.Error())
+			return
 		}
 		gameHub.Broadcast()
 
@@ -942,6 +1102,11 @@ func main() {
 	flag.StringVar(&cfg.InstanceID, "instance-id", pickString(fileCfg.InstanceID, "INSTANCE_ID", "demo-1"), "实例标识")
 	flag.StringVar(&cfg.PublicKeyPath, "pubkey", pickString(fileCfg.PublicKeyPath, "PUBKEY", "config/plugin_jwt.pub.pem"), "聊天室公钥 PEM 路径")
 	flag.IntVar(&cfg.TurnSeconds, "turn-seconds", pickInt(fileCfg.TurnSeconds, "TURN_SECONDS", 60), "每回合思考时限（秒，0 为不计时）")
+	// 日志自动裁剪：run.sh 会把输出追加到日志文件，这里定期把超限的旧内容裁掉
+	logFilePath := pickString("", "LOG_FILE", "")
+	logMaxKB := pickInt(0, "LOG_MAX_KB", 200)
+	flag.StringVar(&logFilePath, "log-file", logFilePath, "日志文件路径（用于自动裁剪，留空则不裁剪）")
+	flag.IntVar(&logMaxKB, "log-max-kb", logMaxKB, "日志文件超过该大小（KB）时裁剪旧内容")
 	flag.Parse()
 
 	bridgeReady := cfg.RoomID != 0 && cfg.IntegrationID != "" && cfg.BridgeSecret != ""
@@ -1037,11 +1202,15 @@ func main() {
 		log.Printf("  房间号   room-id          = %d", cfg.RoomID)
 		log.Printf("  接入方   integration-id   = %s", cfg.IntegrationID)
 		log.Printf("  聊天室   chatroom         = %s", cfg.ChatroomBase)
-		log.Printf("  玩法     默认%s，可切换%s · 棋盘 %d/%d 路固定 · 每回合 %d 秒",
-			ModeLabel(ModeGo), ModeLabel(ModeGomoku), BoardSizeStandard, BoardSizeGomoku, cfg.TurnSeconds)
+		log.Printf("  玩法     默认%s，可切换%s/%s · 棋盘 %d×%d / %d×%d / %d×%d 固定 · 每回合 %d 秒",
+			ModeLabel(ModeGo), ModeLabel(ModeGomoku), ModeLabel(ModeXiangqi),
+			BoardSizeStandard, BoardSizeStandard, BoardSizeGomoku, BoardSizeGomoku,
+			BoardColsXiangqi, BoardRowsXiangqi, cfg.TurnSeconds)
 	} else {
 		log.Printf("围棋插件 Demo 启动于 %s（页面模式，等待配置房间参数后再启用联机）", cfg.Addr)
 	}
+	startLogTrim(logFilePath, logMaxKB)
+
 	if err := http.ListenAndServe(cfg.Addr, mux); err != nil {
 		log.Fatal(err)
 	}

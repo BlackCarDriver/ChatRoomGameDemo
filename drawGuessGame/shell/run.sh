@@ -29,7 +29,8 @@ if [ -f "$PID_FILE" ]; then
 fi
 
 cd "$APP_DIR"
-nohup "$BINARY" "$@" >> "$LOG_FILE" 2>&1 < /dev/null &
+# 传入日志路径，程序会定期裁剪超出上限的旧日志（默认 200KB，可用 LOG_MAX_KB 调整）
+LOG_FILE="$LOG_FILE" nohup "$BINARY" "$@" >> "$LOG_FILE" 2>&1 < /dev/null &
 PID=$!
 echo "$PID" > "$PID_FILE"
 
