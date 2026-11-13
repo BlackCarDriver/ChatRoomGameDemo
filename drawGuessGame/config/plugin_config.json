@@ -1,0 +1,11 @@
+{
+  "addr": ":8091",
+  "instanceId": "draw-1",
+  "pubkey": "config/plugin_jwt.pub.pem",
+  "wordsPath": "config/draw_words.json",
+  "roundSeconds": 60,
+  "selectSeconds": 10,
+  "resultSeconds": 8,
+  "totalRounds": 0,
+  "maxPlayers": 12
+}

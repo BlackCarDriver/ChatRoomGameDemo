@@ -1,0 +1,6 @@
+{
+  "addr": ":8090",
+  "instanceId": "weiqiGame",
+  "pubkey": "config/plugin_jwt.pub.pem",
+  "turnSeconds": 60
+}

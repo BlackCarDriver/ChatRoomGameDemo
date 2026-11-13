@@ -2,8 +2,5 @@ weiqiGame
 weiqi
 shell/weiqi.pid
 shell/weiqi.log
-config/plugin_jwt.pub.pem
-config/plugin_config.json
-config/integration.json
 shell/
 *.log

@@ -2,13 +2,7 @@
 drawGuess
 drawGuessGame
 
-# 本地部署配置（含密钥，不入库）
-config/plugin_jwt.pub.pem
-config/plugin_config.json
-config/integration.json
-
 # shell 运行时文件
 shell/drawGuess.pid
 shell/drawGuess.log
 *.log
-drawGuest/config/integration.json

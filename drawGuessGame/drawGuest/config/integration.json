@@ -1,0 +1,8 @@
+{
+  "chatroom": "http://localhost:4300",
+  "roomId": 20001,
+  "integrationId": "intg_QS98SNxSAM0mKOny",
+  "bridgeSecret": "ostvlPu32EKp1XEJtaZ1nkHAtRXZNBwCjigBPAezsbI",
+  "exchangeSecret": "2zXBpwbOPisH3Jg-keC5w2BDfcK-U2nx7N34ZHp2vFQ",
+  "secretVersion": 1
+}
