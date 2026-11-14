@@ -1,0 +1,14 @@
+{
+  "addr": ":8091",
+  "instanceId": "coin-1",
+  "pubkey": "config/plugin_jwt.pub.pem",
+  "dataDir": "data",
+  "timezone": "Asia/Shanghai",
+  "dailyGiftCoins": 10,
+  "freePlays": 10,
+  "feeCoins": 1,
+  "interestRateBps": 100,
+  "loanMultiplier": 100,
+  "revealMs": 2500,
+  "graceSeconds": 3
+}

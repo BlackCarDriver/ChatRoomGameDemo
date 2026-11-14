@@ -12,6 +12,7 @@
 - [Go SDK 使用](./接入教程.md#在自己的项目中复用-go-sdk)：SDK 依赖引用与业务回调。
 - [围棋 / 五子棋 / 象棋示例](./weiqiGame/README.md)：游戏简介与玩法。
 - [你画我猜示例](./drawGuessGame/README.md)：游戏简介、玩法与配置。
+- [梭哈模拟器示例](./coinMachine/README.md)：3D 投币机、贷款利息、破产与榜单。
 
 ## 示例项目
 
@@ -19,6 +20,7 @@
 | --- | --- | --- | --- |
 | [weiqiGame](./weiqiGame/) | 围棋 / 五子棋 / 象棋、双人对局、观战、头像与头像框、聊天、全屏控制 | Go 1.21+、原生 HTML / JavaScript | 内嵌 iframe、新标签页 |
 | [drawGuessGame](./drawGuessGame/) | 你画我猜、多人轮流作画、聊天猜词、词库复用、原生画板 | Go 1.21+、原生 HTML / JavaScript（Canvas） | 内嵌 iframe、新标签页 |
+| [coinMachine](./coinMachine/) | 梭哈模拟器、3D 投币机、金币堆、每日赠送、贷款利息、破产、净资产榜 | Go 1.21+、Three.js、原生 HTML / JavaScript | 内嵌 iframe、新标签页 |
 
 ```text
 ChatRoomGameDemo/

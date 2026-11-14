@@ -1,0 +1,5 @@
+data/
+web/node_modules/
+*.log
+*.pid
+coinMachine
